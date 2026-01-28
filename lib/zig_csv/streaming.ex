@@ -119,6 +119,9 @@ defmodule ZigCSV.Streaming do
   @default_batch_size 1000
   @default_encoded_seps <<1, 1, ?,>>
   @default_escape "\""
+  # Minimum buffer size before calling NIF for enumerable streaming.
+  # Prevents per-line NIF calls when input is line-based (e.g., File.stream!()).
+  @min_buffer_size 64 * 1024
 
   # ==========================================================================
   # Public API
@@ -462,36 +465,63 @@ defmodule ZigCSV.Streaming do
     iterator =
       Enumerable.reduce(enumerable, {:cont, nil}, fn item, _acc -> {:suspend, item} end)
 
-    {:enum, iterator, "", [], encoded_seps, escape, batch_size}
+    # State: {iterator, buffer_chunks (iodata, reversed), buffer_size, rows, row_count, config...}
+    {:enum, iterator, [], 0, [], 0, encoded_seps, escape, batch_size}
   end
 
   defp next_rows_enum(
-         {:enum, {:suspended, chunk, continuation}, buffer, rows, encoded_seps, escape, batch_size}
+         {:enum, {:suspended, chunk, continuation}, buf_chunks, buf_size, rows, row_count,
+          encoded_seps, escape, batch_size}
        ) do
     chunk_binary = if is_binary(chunk), do: chunk, else: to_string(chunk)
-    data = buffer <> chunk_binary
+    new_buf_chunks = [chunk_binary | buf_chunks]
+    new_buf_size = buf_size + byte_size(chunk_binary)
 
-    {parsed, consumed} = ZigCSV.Native.parse_chunk_encoded(data, encoded_seps, escape)
+    # Buffer small chunks to avoid per-line NIF calls (e.g., File.stream!())
+    if new_buf_size < @min_buffer_size do
+      next_iterator = continuation.({:cont, nil})
 
-    {new_rows, remaining} =
-      if consumed > 0 do
-        {rows ++ parsed, binary_part(data, consumed, byte_size(data) - consumed)}
-      else
-        {rows, data}
-      end
-
-    next_iterator = continuation.({:cont, nil})
-
-    if length(new_rows) >= batch_size do
-      {to_emit, rest} = Enum.split(new_rows, batch_size)
-      {to_emit, {:enum, next_iterator, remaining, rest, encoded_seps, escape, batch_size}}
+      next_rows_enum(
+        {:enum, next_iterator, new_buf_chunks, new_buf_size, rows, row_count, encoded_seps,
+         escape, batch_size}
+      )
     else
-      next_rows_enum({:enum, next_iterator, remaining, new_rows, encoded_seps, escape, batch_size})
+      data = IO.iodata_to_binary(Enum.reverse(new_buf_chunks))
+      {parsed, consumed} = ZigCSV.Native.parse_chunk_encoded(data, encoded_seps, escape)
+      parsed_count = length(parsed)
+
+      {new_rows, new_row_count, remaining} =
+        if consumed > 0 do
+          {rows ++ parsed, row_count + parsed_count,
+           binary_part(data, consumed, byte_size(data) - consumed)}
+        else
+          {rows, row_count, data}
+        end
+
+      next_iterator = continuation.({:cont, nil})
+
+      if new_row_count >= batch_size do
+        {to_emit, rest} = Enum.split(new_rows, batch_size)
+
+        {to_emit,
+         {:enum, next_iterator, [remaining], byte_size(remaining), rest,
+          new_row_count - batch_size, encoded_seps, escape, batch_size}}
+      else
+        next_rows_enum(
+          {:enum, next_iterator, [remaining], byte_size(remaining), new_rows, new_row_count,
+           encoded_seps, escape, batch_size}
+        )
+      end
     end
   end
 
-  defp next_rows_enum({:enum, {:done, _}, buffer, rows, encoded_seps, escape, batch_size}) do
-    # Parse remaining buffer
+  defp next_rows_enum(
+         {:enum, {:done, _}, buf_chunks, _buf_size, rows, _row_count, encoded_seps, escape,
+          batch_size}
+       ) do
+    # Flush remaining buffer
+    buffer = IO.iodata_to_binary(Enum.reverse(buf_chunks))
+
     final_rows =
       if byte_size(buffer) > 0 do
         parsed = ZigCSV.Native.parse_fast(buffer, encoded_seps, escape)
@@ -501,14 +531,19 @@ defmodule ZigCSV.Streaming do
       end
 
     if final_rows == [] do
-      {:halt, {:enum, {:done, nil}, "", [], encoded_seps, escape, batch_size}}
+      {:halt, {:enum, {:done, nil}, [], 0, [], 0, encoded_seps, escape, batch_size}}
     else
-      {final_rows, {:enum, {:done, nil}, "", [], encoded_seps, escape, batch_size}}
+      {final_rows, {:enum, {:done, nil}, [], 0, [], 0, encoded_seps, escape, batch_size}}
     end
   end
 
-  defp next_rows_enum({:enum, {:halted, _}, buffer, rows, encoded_seps, escape, batch_size}) do
+  defp next_rows_enum(
+         {:enum, {:halted, _}, buf_chunks, _buf_size, rows, _row_count, encoded_seps, escape,
+          batch_size}
+       ) do
     # Stream was halted - finalize remaining
+    buffer = IO.iodata_to_binary(Enum.reverse(buf_chunks))
+
     final_rows =
       if byte_size(buffer) > 0 do
         parsed = ZigCSV.Native.parse_fast(buffer, encoded_seps, escape)
@@ -518,9 +553,9 @@ defmodule ZigCSV.Streaming do
       end
 
     if final_rows == [] do
-      {:halt, {:enum, {:halted, nil}, "", [], encoded_seps, escape, batch_size}}
+      {:halt, {:enum, {:halted, nil}, [], 0, [], 0, encoded_seps, escape, batch_size}}
     else
-      {final_rows, {:enum, {:halted, nil}, "", [], encoded_seps, escape, batch_size}}
+      {final_rows, {:enum, {:halted, nil}, [], 0, [], 0, encoded_seps, escape, batch_size}}
     end
   end
 

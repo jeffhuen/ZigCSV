@@ -100,15 +100,19 @@ defmodule CsvSpectrumTest do
       assert result == expected
     end
 
-    test "location_coordinates.csv - numeric/coordinate data" do
-      {csv, expected} = load_test("location_coordinates")
-      result = CSV.parse_string(csv, skip_headers: false) |> to_json_format()
-      assert result == expected
+    test "location_coordinates.csv - raises on unquoted escape characters" do
+      # This file contains literal " inside unquoted fields (arc-seconds notation).
+      # NimbleCSV raises on escape characters in unquoted fields, and so do we.
+      {csv, _expected} = load_test("location_coordinates")
+
+      assert_raise ZigCSV.ParseError, ~r/unexpected escape character/, fn ->
+        CSV.parse_string(csv, skip_headers: false)
+      end
     end
   end
 
   describe "csv-spectrum with all strategies" do
-    @strategies [:basic, :simd, :indexed, :parallel, :zero_copy]
+    @strategies [:basic, :simd, :parallel, :zero_copy]
 
     for strategy <- @strategies do
       test "all tests pass with #{strategy} strategy" do

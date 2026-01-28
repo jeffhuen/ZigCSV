@@ -321,7 +321,7 @@ defmodule FullCompatTest do
   end
 
   describe "all ZigCSV strategies produce NimbleCSV-compatible output" do
-    @strategies [:basic, :simd, :indexed, :parallel, :zero_copy]
+    @strategies [:basic, :simd, :parallel, :zero_copy]
 
     test "simple CSV" do
       csv = simple_csv()

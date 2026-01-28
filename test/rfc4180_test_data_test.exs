@@ -150,7 +150,7 @@ defmodule RFC4180TestDataTest do
   end
 
   describe "all strategies produce consistent results" do
-    @strategies [:basic, :simd, :indexed, :parallel, :zero_copy]
+    @strategies [:basic, :simd, :parallel, :zero_copy]
     @test_files ~w(simple-lf quotes-with-comma quotes-with-escaped-quote quotes-with-newline utf8)
 
     for strategy <- @strategies do

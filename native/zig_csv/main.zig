@@ -100,19 +100,7 @@ pub fn parse_fast(input: []const u8, encoded_seps: []const u8, escape: []const u
 }
 
 // ============================================================================
-// Strategy C: Indexed Parser (delegates to fast)
-// ============================================================================
-
-pub fn parse_string_indexed(input: []const u8) beam.term {
-    return fast.parseCSVFast(input, Config.singleByte(',', '"'));
-}
-
-pub fn parse_string_indexed_with_config(input: []const u8, separator: u8, escape: u8) beam.term {
-    return fast.parseCSVFast(input, legacyConfig(separator, escape));
-}
-
-// ============================================================================
-// Strategy D: Streaming Parser (Resource-based)
+// Strategy C: Streaming Parser (Resource-based)
 // ============================================================================
 
 pub fn streaming_new() StreamingParserResource {
@@ -121,15 +109,19 @@ pub fn streaming_new() StreamingParserResource {
 
 pub fn streaming_new_with_config(separator: u8, escape: u8) StreamingParserResource {
     const state = StreamingParserState.init(legacyConfig(separator, escape));
+    // Resource is ~40 bytes; if this alloc fails the VM is critically OOM.
+    // Returning an error tuple isn't feasible with Zigler's auto-marshaling of resource types.
     return StreamingParserResource.create(state, .{}) catch {
-        @panic("Failed to create streaming parser resource");
+        @panic("streaming_new_with_config: failed to create resource (VM critically OOM)");
     };
 }
 
 pub fn streaming_new_encoded(encoded_seps: []const u8, escape: []const u8) StreamingParserResource {
     const state = StreamingParserState.init(decodeConfig(encoded_seps, escape));
+    // Resource is ~40 bytes; if this alloc fails the VM is critically OOM.
+    // Returning an error tuple isn't feasible with Zigler's auto-marshaling of resource types.
     return StreamingParserResource.create(state, .{}) catch {
-        @panic("Failed to create streaming parser resource");
+        @panic("streaming_new_encoded: failed to create resource (VM critically OOM)");
     };
 }
 

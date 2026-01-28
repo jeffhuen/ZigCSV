@@ -69,7 +69,6 @@ defmodule ZigCSVTest do
 
       assert CSV.parse_string(csv, strategy: :basic, skip_headers: false) == expected
       assert CSV.parse_string(csv, strategy: :simd, skip_headers: false) == expected
-      assert CSV.parse_string(csv, strategy: :indexed, skip_headers: false) == expected
       assert CSV.parse_string(csv, strategy: :parallel, skip_headers: false) == expected
     end
   end
@@ -96,7 +95,6 @@ defmodule ZigCSVTest do
 
       assert TestTSV.parse_string(tsv, strategy: :basic, skip_headers: false) == expected
       assert TestTSV.parse_string(tsv, strategy: :simd, skip_headers: false) == expected
-      assert TestTSV.parse_string(tsv, strategy: :indexed, skip_headers: false) == expected
       assert TestTSV.parse_string(tsv, strategy: :parallel, skip_headers: false) == expected
     end
 

@@ -36,6 +36,7 @@ pub fn ParseEngine(comptime Emitter: type) type {
                         pos += esc_len;
                         const content_start = pos;
                         var needs_unescape = false;
+                        var found_closing_escape = false;
 
                         // Find closing escape
                         if (config.isSingleByteEsc()) {
@@ -49,6 +50,7 @@ pub fn ParseEngine(comptime Emitter: type) type {
                                         needs_unescape = true;
                                         pos += 1;
                                     } else {
+                                        found_closing_escape = true;
                                         break;
                                     }
                                 } else {
@@ -67,6 +69,7 @@ pub fn ParseEngine(comptime Emitter: type) type {
                                         needs_unescape = true;
                                         pos += esc_len;
                                     } else {
+                                        found_closing_escape = true;
                                         break;
                                     }
                                 } else {
@@ -76,7 +79,23 @@ pub fn ParseEngine(comptime Emitter: type) type {
                             }
                         }
 
-                        const content_end = if (pos > content_start and pos >= esc_len) pos - esc_len else content_start;
+                        std.debug.assert(pos >= content_start);
+                        const content_end = if (found_closing_escape and pos > content_start and pos >= esc_len)
+                            pos - esc_len
+                        else if (!found_closing_escape)
+                            pos // Unterminated quote: content extends to end of input
+                        else
+                            content_start; // Empty quoted field
+                        std.debug.assert(content_end >= content_start);
+                        std.debug.assert(content_end <= input.len);
+                        std.debug.assert(content_start <= input.len);
+
+                        if (!found_closing_escape) {
+                            if (@hasDecl(Emitter, "onUnterminatedQuote")) {
+                                emitter.onUnterminatedQuote();
+                            }
+                        }
+
                         emitter.onField(input, content_start, content_end, needs_unescape, &config);
                     } else {
                         // Unquoted field
@@ -88,6 +107,19 @@ pub fn ParseEngine(comptime Emitter: type) type {
                             } else {
                                 pos = input.len;
                             }
+
+                            // Check for escape character inside unquoted field (NimbleCSV raises on this)
+                            if (@hasDecl(Emitter, "onMidFieldEscape")) {
+                                const field_data = input[start..pos];
+                                const has_esc = if (config.isSingleByteEsc())
+                                    scanner.simdFindByte(field_data, config.escByte()) != null
+                                else
+                                    scanner.findPattern(field_data, config.getEscape()) != null;
+                                if (has_esc) {
+                                    emitter.onMidFieldEscape(start);
+                                }
+                            }
+
                             emitter.onField(input, start, pos, false, &config);
                         } else {
                             // Empty field at end of input

@@ -39,83 +39,58 @@ pub fn parseChunkSimd(input: []const u8, config: Config) struct { beam.term, usi
     }
 
     var emitter = ChunkEmitter{};
-    defer emitter.collector.deinit();
+    defer emitter.deinit();
     return engine_mod.ParseEngine(ChunkEmitter).parse(input, config, &emitter);
 }
 
 const ChunkEmitter = struct {
     collector: row_collector.RowCollector = .{},
-    field_buf: [row_collector.MAX_FIELDS]beam.term = undefined,
+    fields: std.ArrayListUnmanaged(beam.term) = .{},
     unescape_buf: [65536]u8 = undefined,
-    field_count: usize = 0,
     last_row_end: usize = 0,
     current_pos: usize = 0,
 
     pub const Result = struct { beam.term, usize };
 
-    pub fn canAddField(self: *ChunkEmitter) bool {
-        return self.field_count < self.field_buf.len;
+    pub fn canAddField(_: *ChunkEmitter) bool {
+        return true;
     }
 
     pub fn onField(self: *ChunkEmitter, input: []const u8, start: usize, end: usize, needs_unescape: bool, config: *const Config) void {
         const raw = input[start..end];
 
-        if (needs_unescape) {
+        const term = if (needs_unescape and raw.len <= self.unescape_buf.len) blk: {
             const len = field_mod.unescapeField(raw, config, &self.unescape_buf);
-            self.field_buf[self.field_count] = beam.make(self.unescape_buf[0..len], .{});
-        } else {
-            self.field_buf[self.field_count] = beam.make(raw, .{});
-        }
-        self.field_count += 1;
+            break :blk beam.make(self.unescape_buf[0..len], .{});
+        } else blk: {
+            break :blk beam.make(raw, .{});
+        };
+
+        self.fields.append(memory.allocator, term) catch {
+            self.collector.oom_occurred = true;
+            self.current_pos = end;
+            return;
+        };
         self.current_pos = end;
     }
 
     pub fn onRowEnd(self: *ChunkEmitter, _: bool) void {
-        if (self.field_count > 0) {
-            const field_list = row_collector.buildFieldList(&self.field_buf, self.field_count);
+        if (self.fields.items.len > 0) {
+            const field_list = row_collector.buildFieldList(self.fields.items, self.fields.items.len);
             self.collector.addRow(field_list);
             self.last_row_end = self.current_pos;
         }
-        self.field_count = 0;
+        self.fields.clearRetainingCapacity();
     }
 
     pub fn finish(self: *ChunkEmitter) Result {
+        // ChunkEmitter is used for streaming — don't raise on errors,
+        // just return rows as-is.
         return .{ self.collector.buildList(), self.last_row_end };
     }
+
+    pub fn deinit(self: *ChunkEmitter) void {
+        self.fields.deinit(memory.allocator);
+        self.collector.deinit();
+    }
 };
-
-// Helper functions kept for compatibility
-pub fn countListLength(list: beam.term) usize {
-    var count: usize = 0;
-    var current = list;
-    while (true) {
-        const head, const tail = beam.get_list_cell(current, .{}) catch break;
-        _ = head;
-        count += 1;
-        current = tail;
-    }
-    return count;
-}
-
-pub fn appendLists(list1: beam.term, list2: beam.term) beam.term {
-    var items: [102400]beam.term = undefined;
-    var count: usize = 0;
-
-    var current = list1;
-    while (count < items.len) {
-        const head, const tail = beam.get_list_cell(current, .{}) catch break;
-        items[count] = head;
-        count += 1;
-        current = tail;
-    }
-
-    current = list2;
-    while (count < items.len) {
-        const head, const tail = beam.get_list_cell(current, .{}) catch break;
-        items[count] = head;
-        count += 1;
-        current = tail;
-    }
-
-    return beam.make(items[0..count], .{});
-}

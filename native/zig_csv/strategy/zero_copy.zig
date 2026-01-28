@@ -12,46 +12,82 @@ const Config = types.Config;
 
 const ZeroCopyEmitter = struct {
     collector: row_collector.RowCollector = .{},
-    field_buf: [row_collector.MAX_FIELDS]beam.term = undefined,
+    fields: std.ArrayListUnmanaged(beam.term) = .{},
     unescape_buf: [65536]u8 = undefined,
-    field_count: usize = 0,
+    unterminated_quote: bool = false,
+    mid_field_escape: bool = false,
+    error_byte_pos: usize = 0,
     // Stored during init for enif_make_sub_binary calls
     input_term_v: e.ErlNifTerm = undefined,
     env: ?*e.ErlNifEnv = null,
 
     pub const Result = beam.term;
 
-    pub fn canAddField(self: *ZeroCopyEmitter) bool {
-        return self.field_count < self.field_buf.len;
+    pub fn canAddField(_: *ZeroCopyEmitter) bool {
+        return true;
+    }
+
+    pub fn onUnterminatedQuote(self: *ZeroCopyEmitter) void {
+        self.unterminated_quote = true;
+    }
+
+    pub fn onMidFieldEscape(self: *ZeroCopyEmitter, pos: usize) void {
+        self.mid_field_escape = true;
+        self.error_byte_pos = pos;
     }
 
     pub fn onField(self: *ZeroCopyEmitter, input: []const u8, start: usize, end: usize, needs_unescape: bool, config: *const Config) void {
+        var term: beam.term = undefined;
+
         if (needs_unescape) {
             const raw = input[start..end];
-            const len = field_mod.unescapeField(raw, config, &self.unescape_buf);
-            self.field_buf[self.field_count] = beam.make(self.unescape_buf[0..len], .{});
+            if (raw.len <= self.unescape_buf.len) {
+                const len = field_mod.unescapeField(raw, config, &self.unescape_buf);
+                term = beam.make(self.unescape_buf[0..len], .{});
+            } else {
+                // Field too large for unescape buffer — emit raw (doubled escapes remain).
+                term = beam.make(raw, .{});
+            }
         } else if (self.env) |env_ptr| {
             // Zero-copy sub-binary
-            self.field_buf[self.field_count] = .{
+            term = .{
                 .v = e.enif_make_sub_binary(env_ptr, self.input_term_v, start, end - start),
             };
         } else {
             // Fallback: copy (should not happen in normal use)
-            self.field_buf[self.field_count] = beam.make(input[start..end], .{});
+            term = beam.make(input[start..end], .{});
         }
-        self.field_count += 1;
+
+        self.fields.append(memory.allocator, term) catch {
+            self.collector.oom_occurred = true;
+            return;
+        };
     }
 
     pub fn onRowEnd(self: *ZeroCopyEmitter, _: bool) void {
-        if (self.field_count > 0) {
-            const field_list = row_collector.buildFieldList(&self.field_buf, self.field_count);
+        if (self.fields.items.len > 0) {
+            const field_list = row_collector.buildFieldList(self.fields.items, self.fields.items.len);
             self.collector.addRow(field_list);
         }
-        self.field_count = 0;
+        self.fields.clearRetainingCapacity();
     }
 
     pub fn finish(self: *ZeroCopyEmitter) beam.term {
+        if (self.collector.oom_occurred or self.unterminated_quote or self.mid_field_escape) {
+            const tag = if (self.unterminated_quote)
+                beam.make(.unterminated_escape, .{})
+            else if (self.mid_field_escape)
+                beam.make(.{ .unexpected_escape, self.error_byte_pos }, .{})
+            else
+                beam.make(.oom, .{});
+            return beam.make(.{ .partial, tag, self.collector.buildList() }, .{});
+        }
         return self.collector.buildList();
+    }
+
+    pub fn deinit(self: *ZeroCopyEmitter) void {
+        self.fields.deinit(memory.allocator);
+        self.collector.deinit();
     }
 };
 
@@ -74,6 +110,6 @@ pub fn parseCSVZeroCopy(input_term: beam.term, config: Config) beam.term {
     var emitter = ZeroCopyEmitter{};
     emitter.input_term_v = input_term.v;
     emitter.env = env;
-    defer emitter.collector.deinit();
+    defer emitter.deinit();
     return engine.ParseEngine(ZeroCopyEmitter).parse(input, config, &emitter);
 }

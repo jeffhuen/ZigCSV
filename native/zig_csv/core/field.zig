@@ -11,6 +11,7 @@ const FieldBoundary = types.FieldBoundary;
 /// For single-byte escape (e.g. " -> ""): removes one of each doubled byte.
 /// For multi-byte escape (e.g. '' -> ''''): removes one copy of each doubled pattern.
 pub fn unescapeField(input: []const u8, config: *const Config, output: []u8) usize {
+    std.debug.assert(input.len <= output.len);
     const esc = config.getEscape();
     const esc_len = esc.len;
 
@@ -44,6 +45,7 @@ pub fn unescapeField(input: []const u8, config: *const Config, output: []u8) usi
 
 /// Legacy single-byte unescape (also used by engine fast path)
 pub fn unescapeSingleByte(input: []const u8, escape: u8, output: []u8) usize {
+    std.debug.assert(input.len <= output.len);
     var write_idx: usize = 0;
     var read_idx: usize = 0;
 

@@ -12,43 +12,72 @@ const Config = types.Config;
 
 const FastEmitter = struct {
     collector: row_collector.RowCollector = .{},
-    field_buf: [row_collector.MAX_FIELDS]beam.term = undefined,
+    fields: std.ArrayListUnmanaged(beam.term) = .{},
     unescape_buf: [65536]u8 = undefined,
-    field_count: usize = 0,
+    unterminated_quote: bool = false,
+    mid_field_escape: bool = false,
+    error_byte_pos: usize = 0,
 
     pub const Result = beam.term;
 
-    pub fn canAddField(self: *FastEmitter) bool {
-        return self.field_count < self.field_buf.len;
+    pub fn canAddField(_: *FastEmitter) bool {
+        return true;
+    }
+
+    pub fn onUnterminatedQuote(self: *FastEmitter) void {
+        self.unterminated_quote = true;
+    }
+
+    pub fn onMidFieldEscape(self: *FastEmitter, pos: usize) void {
+        self.mid_field_escape = true;
+        self.error_byte_pos = pos;
     }
 
     pub fn onField(self: *FastEmitter, input: []const u8, start: usize, end: usize, needs_unescape: bool, config: *const Config) void {
         const raw = input[start..end];
 
-        if (needs_unescape) {
+        const term = if (needs_unescape and raw.len <= self.unescape_buf.len) blk: {
             const len = field_mod.unescapeField(raw, config, &self.unescape_buf);
-            self.field_buf[self.field_count] = beam.make(self.unescape_buf[0..len], .{});
-        } else {
-            self.field_buf[self.field_count] = beam.make(raw, .{});
-        }
-        self.field_count += 1;
+            break :blk beam.make(self.unescape_buf[0..len], .{});
+        } else blk: {
+            break :blk beam.make(raw, .{});
+        };
+
+        self.fields.append(memory.allocator, term) catch {
+            self.collector.oom_occurred = true;
+            return;
+        };
     }
 
     pub fn onRowEnd(self: *FastEmitter, _: bool) void {
-        if (self.field_count > 0) {
-            const field_list = row_collector.buildFieldList(&self.field_buf, self.field_count);
+        if (self.fields.items.len > 0) {
+            const field_list = row_collector.buildFieldList(self.fields.items, self.fields.items.len);
             self.collector.addRow(field_list);
         }
-        self.field_count = 0;
+        self.fields.clearRetainingCapacity();
     }
 
     pub fn finish(self: *FastEmitter) beam.term {
+        if (self.collector.oom_occurred or self.unterminated_quote or self.mid_field_escape) {
+            const tag = if (self.unterminated_quote)
+                beam.make(.unterminated_escape, .{})
+            else if (self.mid_field_escape)
+                beam.make(.{ .unexpected_escape, self.error_byte_pos }, .{})
+            else
+                beam.make(.oom, .{});
+            return beam.make(.{ .partial, tag, self.collector.buildList() }, .{});
+        }
         return self.collector.buildList();
+    }
+
+    pub fn deinit(self: *FastEmitter) void {
+        self.fields.deinit(memory.allocator);
+        self.collector.deinit();
     }
 };
 
 pub fn parseCSVFast(input: []const u8, config: Config) beam.term {
     var emitter = FastEmitter{};
-    defer emitter.collector.deinit();
+    defer emitter.deinit();
     return engine.ParseEngine(FastEmitter).parse(input, config, &emitter);
 }

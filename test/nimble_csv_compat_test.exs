@@ -287,12 +287,10 @@ defmodule NimbleCSVCompatTest do
 
       basic = CSV.parse_string(csv, strategy: :basic, skip_headers: false)
       simd = CSV.parse_string(csv, strategy: :simd, skip_headers: false)
-      indexed = CSV.parse_string(csv, strategy: :indexed, skip_headers: false)
       parallel = CSV.parse_string(csv, strategy: :parallel, skip_headers: false)
 
       assert basic == simd
-      assert simd == indexed
-      assert indexed == parallel
+      assert simd == parallel
     end
   end
 

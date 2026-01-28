@@ -54,9 +54,8 @@ defmodule ZigCSV do
   ZigCSV supports multiple parsing strategies via the `:strategy` option:
 
     * `:simd` - SIMD-accelerated scanning via Zig @Vector (default, fastest for most files)
-    * `:basic` - Simple byte-by-byte parsing (good for debugging)
-    * `:indexed` - Two-phase index-then-extract (good for re-extracting rows)
-    * `:parallel` - Multi-threaded (best for very large files 500MB+ with complex quoting)
+    * `:basic` - Scalar parsing (same as :simd; scanner has automatic scalar fallback)
+    * `:parallel` - Currently aliases :simd; reserved for future multi-threaded support
     * `:zero_copy` - Sub-binary references (NimbleCSV-like memory profile, max speed)
 
   Example:
@@ -94,6 +93,14 @@ defmodule ZigCSV do
 
   The only behavioral difference is that ZigCSV adds the `:strategy` option
   for selecting the parsing approach.
+
+  ## Edge Cases
+
+  **Unterminated quoted fields**: An opening quote with no closing quote raises
+  `ZigCSV.ParseError`, matching NimbleCSV behavior.
+
+  **Unexpected escape characters**: A quote character appearing inside an
+  unquoted field raises `ZigCSV.ParseError`, matching NimbleCSV behavior.
 
   ## Encoding Support
 
@@ -138,9 +145,8 @@ defmodule ZigCSV do
   ## Available Strategies
 
     * `:simd` - SIMD-accelerated scanning via Zig @Vector (default, fastest for most files)
-    * `:basic` - Simple byte-by-byte parsing (useful for debugging)
-    * `:indexed` - Two-phase index-then-extract (good for re-extracting rows)
-    * `:parallel` - Multi-threaded (best for very large files 500MB+ with complex quoting)
+    * `:basic` - Scalar parsing (same as :simd; scanner has automatic scalar fallback)
+    * `:parallel` - Currently aliases :simd; reserved for future multi-threaded support
     * `:zero_copy` - Sub-binary references (maximum speed, keeps parent binary alive)
 
   ## Memory Model Comparison
@@ -149,7 +155,6 @@ defmodule ZigCSV do
   |----------|--------------|--------------|-----------|
   | `:simd` | Copy | Freed immediately | Default, memory-constrained |
   | `:basic` | Copy | Freed immediately | Debugging, baseline |
-  | `:indexed` | Copy | Freed immediately | Row range extraction |
   | `:parallel` | Copy | Freed immediately | Large files, complex CSVs |
   | `:zero_copy` | Sub-binary | Kept alive | Speed-critical, short-lived |
 
@@ -165,7 +170,7 @@ defmodule ZigCSV do
       CSV.parse_string(data, strategy: :zero_copy)
 
   """
-  @type strategy :: :simd | :basic | :indexed | :parallel | :zero_copy
+  @type strategy :: :simd | :basic | :parallel | :zero_copy
 
   @typedoc """
   Options for parsing functions.
@@ -175,9 +180,8 @@ defmodule ZigCSV do
     * `:skip_headers` - When `true`, skips the first row. Defaults to `true`.
     * `:strategy` - The parsing strategy to use. One of:
       * `:simd` - SIMD-accelerated (default)
-      * `:basic` - Simple byte-by-byte
-      * `:indexed` - Two-phase index-then-extract
-      * `:parallel` - Multi-threaded
+      * `:basic` - Scalar parsing (same as :simd)
+      * `:parallel` - Currently aliases :simd
       * `:zero_copy` - Sub-binary references (keeps parent binary alive)
 
   ## Streaming Options
@@ -381,9 +385,8 @@ defmodule ZigCSV do
 
     * `:strategy` - The default parsing strategy. One of:
       * `:simd` - SIMD-accelerated via Zig @Vector (default, fastest)
-      * `:basic` - Simple byte-by-byte parsing
-      * `:indexed` - Two-phase index-then-extract
-      * `:parallel` - Multi-threaded
+      * `:basic` - Scalar parsing (same as :simd; scanner has automatic scalar fallback)
+      * `:parallel` - Currently aliases :simd; reserved for future multi-threaded support
       * `:zero_copy` - Sub-binary references (NimbleCSV-like memory, max speed)
 
   ### Documentation
@@ -482,7 +485,6 @@ defmodule ZigCSV do
     newlines = Keyword.get(options, :newlines, ["\r\n", "\n"])
     trim_bom = Keyword.get(options, :trim_bom, false)
     dump_bom = Keyword.get(options, :dump_bom, false)
-    reserved = Keyword.get(options, :reserved, [])
     escape_formula = Keyword.get(options, :escape_formula, nil)
     default_strategy = Keyword.get(options, :strategy, :simd)
     moduledoc = Keyword.get(options, :moduledoc)
@@ -496,8 +498,16 @@ defmodule ZigCSV do
     # Encode config for NIF
     encoded_seps = encode_separators(separators)
 
-    # Build escape_chars including all separator patterns
-    escape_chars = separators ++ [escape, "\n", "\r"] ++ reserved
+    # Build escape_chars for dump escaping — matches NimbleCSV's @reserved default.
+    # :reserved option replaces the entire default list (not appends), per NimbleCSV behavior.
+    escape_chars =
+      Enum.uniq(
+        Keyword.get(
+          options,
+          :reserved,
+          [escape, line_separator] ++ separators ++ newlines
+        )
+      )
 
     stored_options = [
       separator: separator,
@@ -506,7 +516,7 @@ defmodule ZigCSV do
       newlines: newlines,
       trim_bom: trim_bom,
       dump_bom: dump_bom,
-      reserved: reserved,
+      reserved: escape_chars,
       escape_formula: escape_formula,
       encoding: encoding,
       strategy: default_strategy
@@ -650,8 +660,16 @@ defmodule ZigCSV do
       quoted_parse_string_main(config.encoding),
       quoted_maybe_trim_bom(config.trim_bom),
       quoted_maybe_to_utf8(config.encoding),
+      quoted_inline_encoding_helpers(),
       quoted_do_parse_string_clauses()
     ]
+  end
+
+  defp quoted_inline_encoding_helpers do
+    quote do
+      @compile {:inline,
+                maybe_dump_bom: 1, maybe_trim_bom: 1, maybe_to_utf8: 1, maybe_to_encoding: 1}
+    end
   end
 
   defp quoted_parse_string_main(encoding) do
@@ -736,24 +754,64 @@ defmodule ZigCSV do
 
   defp quoted_do_parse_string_clauses do
     quote do
-      defp do_parse_string(string, :basic) do
-        ZigCSV.Native.parse_basic(string, @encoded_seps, @escape)
+      defp do_parse_string(string, strategy) do
+        result =
+          case strategy do
+            :basic -> ZigCSV.Native.parse_basic(string, @encoded_seps, @escape)
+            :simd -> ZigCSV.Native.parse_fast(string, @encoded_seps, @escape)
+            :parallel -> ZigCSV.Native.parse_parallel(string, @encoded_seps, @escape)
+            :zero_copy -> ZigCSV.Native.parse_zero_copy(string, @encoded_seps, @escape)
+          end
+
+        case result do
+          rows when is_list(rows) ->
+            rows
+
+          {:partial, :unterminated_escape, _rows} ->
+            raise ZigCSV.ParseError,
+              message: "expected escape character #{@escape} but reached the end of file"
+
+          {:partial, {:unexpected_escape, byte_pos}, _rows} ->
+            line = extract_error_line(string, byte_pos)
+
+            raise ZigCSV.ParseError,
+              message: "unexpected escape character #{@escape} in #{inspect(line)}"
+
+          {:partial, :oom, _rows} ->
+            raise ZigCSV.ParseError,
+              message: "out of memory during CSV parsing"
+
+          :error ->
+            raise ZigCSV.ParseError,
+              message: "NIF parse failed: could not inspect input binary"
+
+          other ->
+            raise ZigCSV.ParseError,
+              message: "unexpected NIF result: #{inspect(other)}"
+        end
       end
 
-      defp do_parse_string(string, :simd) do
-        ZigCSV.Native.parse_fast(string, @encoded_seps, @escape)
-      end
+      defp extract_error_line(string, byte_pos) do
+        byte_pos = min(byte_pos, byte_size(string))
+        before = binary_part(string, 0, byte_pos)
 
-      defp do_parse_string(string, :indexed) do
-        ZigCSV.Native.parse_fast(string, @encoded_seps, @escape)
-      end
+        line_start =
+          case :binary.matches(before, ["\r\n", "\n"]) do
+            [] -> 0
+            matches ->
+              {pos, len} = List.last(matches)
+              pos + len
+          end
 
-      defp do_parse_string(string, :parallel) do
-        ZigCSV.Native.parse_parallel(string, @encoded_seps, @escape)
-      end
+        remaining = binary_part(string, byte_pos, byte_size(string) - byte_pos)
 
-      defp do_parse_string(string, :zero_copy) do
-        ZigCSV.Native.parse_zero_copy(string, @encoded_seps, @escape)
+        line_end =
+          case :binary.match(remaining, ["\r\n", "\n"]) do
+            {pos, len} -> byte_pos + pos + len
+            :nomatch -> byte_size(string)
+          end
+
+        binary_part(string, line_start, line_end - line_start)
       end
     end
   end
@@ -837,7 +895,7 @@ defmodule ZigCSV do
       end
 
       defp to_line_stream_after_fun(""), do: {:cont, []}
-      defp to_line_stream_after_fun(acc), do: {:cont, [acc], ""}
+      defp to_line_stream_after_fun(acc), do: {:cont, [acc], []}
 
       @spec chunk_by_newline(binary, :binary.cp(), list(binary), tuple) :: {list(binary), binary}
       defp chunk_by_newline(_string, _newline, elements, {_offset, 0}) do
@@ -867,19 +925,39 @@ defmodule ZigCSV do
   defp quoted_dumping_functions(config) do
     escape_formula_ast = quoted_escape_formula_function(config.escape_formula)
     maybe_to_encoding_ast = quoted_maybe_to_encoding(config.encoding)
+    maybe_dump_bom_ast = quoted_maybe_dump_bom(config.dump_bom)
 
-    # Pre-encode delimiters at compile time for non-UTF8 encodings
-    encoded_separator = :unicode.characters_to_binary(config.primary_separator, :utf8, config.encoding)
-    encoded_escape = :unicode.characters_to_binary(config.escape, :utf8, config.encoding)
+    # Pre-encode delimiters at compile time — match NimbleCSV's integer encoding
+    # for single-byte values to produce identical iodata structure
+    encoded_separator =
+      case config.primary_separator
+           |> :unicode.characters_to_binary(:utf8, config.encoding) do
+        <<x>> -> x
+        x -> x
+      end
+
+    encoded_escape =
+      case config.escape
+           |> :unicode.characters_to_binary(:utf8, config.encoding) do
+        <<x>> -> x
+        x -> x
+      end
 
     encoded_line_separator =
-      :unicode.characters_to_binary(config.line_separator, :utf8, config.encoding)
+      case config.line_separator
+           |> :unicode.characters_to_binary(:utf8, config.encoding) do
+        <<x>> -> x
+        x -> x
+      end
 
     quote do
       # Pre-encoded delimiters for dumping
       @encoded_separator unquote(Macro.escape(encoded_separator))
       @encoded_escape unquote(Macro.escape(encoded_escape))
       @encoded_line_separator unquote(Macro.escape(encoded_line_separator))
+      @replacement @escape <> @escape
+
+      unquote(maybe_dump_bom_ast)
 
       @doc """
       Converts an enumerable of rows to iodata in CSV format.
@@ -887,13 +965,11 @@ defmodule ZigCSV do
       @impl ZigCSV
       @spec dump_to_iodata(Enumerable.t()) :: iodata()
       def dump_to_iodata(enumerable) do
-        iodata = Enum.map(enumerable, &dump_row/1)
+        check = init_dumper()
 
-        if @dump_bom do
-          [@bom | iodata]
-        else
-          iodata
-        end
+        enumerable
+        |> Enum.map(&dump(&1, check))
+        |> maybe_dump_bom()
       end
 
       @doc """
@@ -902,29 +978,52 @@ defmodule ZigCSV do
       @impl ZigCSV
       @spec dump_to_stream(Enumerable.t()) :: Enumerable.t()
       def dump_to_stream(enumerable) do
-        Stream.map(enumerable, &dump_row/1)
+        check = init_dumper()
+
+        enumerable
+        |> Stream.map(&dump(&1, check))
+        |> maybe_dump_bom()
       end
 
-      defp dump_row(row) do
-        fields = Enum.map(row, &escape_field/1)
-        [Enum.intersperse(fields, @encoded_separator), @encoded_line_separator]
+      defp init_dumper() do
+        :binary.compile_pattern(@escape_chars)
       end
 
-      defp escape_field(field) when is_binary(field) do
-        field = maybe_escape_formula(field)
+      defp dump([], _check) do
+        [@encoded_line_separator]
+      end
 
-        if String.contains?(field, @escape_chars) do
-          escaped = String.replace(field, @escape, @escape <> @escape)
-          maybe_to_encoding([@encoded_escape, escaped, @encoded_escape])
-        else
-          maybe_to_encoding(field)
+      defp dump([entry], check) do
+        [maybe_escape(entry, check), @encoded_line_separator]
+      end
+
+      defp dump([entry | entries], check) do
+        [maybe_escape(entry, check), @encoded_separator | dump(entries, check)]
+      end
+
+      defp maybe_escape(entry, check) do
+        entry = to_string(entry)
+
+        case :binary.match(entry, check) do
+          {_, _} ->
+            replaced = :binary.replace(entry, @escape, @replacement, [:global])
+
+            [
+              @encoded_escape,
+              maybe_escape_formula(entry),
+              maybe_to_encoding(replaced),
+              @encoded_escape
+            ]
+
+          :nomatch ->
+            [maybe_escape_formula(entry), maybe_to_encoding(entry)]
         end
       end
 
-      defp escape_field(field), do: escape_field(to_string(field))
-
       unquote(escape_formula_ast)
       unquote(maybe_to_encoding_ast)
+
+      @compile {:inline, init_dumper: 0, maybe_escape: 2}
     end
   end
 
@@ -951,23 +1050,47 @@ defmodule ZigCSV do
     end
   end
 
+  # Match NimbleCSV's maybe_dump_bom — handles both lists (dump_to_iodata) and
+  # streams (dump_to_stream) with a single polymorphic private function.
+  defp quoted_maybe_dump_bom(true) do
+    quote do
+      defp maybe_dump_bom(list) when is_list(list), do: [@bom | list]
+      defp maybe_dump_bom(stream), do: Stream.concat([@bom], stream)
+    end
+  end
+
+  defp quoted_maybe_dump_bom(false) do
+    quote do
+      defp maybe_dump_bom(data), do: data
+    end
+  end
+
   defp quoted_escape_formula_function(nil) do
     quote do
-      defp maybe_escape_formula(field), do: field
+      defp maybe_escape_formula(_field), do: []
     end
   end
 
   defp quoted_escape_formula_function(escape_formula) do
-    quote do
-      defp maybe_escape_formula(<<char, _rest::binary>> = field) do
-        if Map.has_key?(unquote(Macro.escape(escape_formula)), <<char>>) do
-          "\t" <> field
-        else
-          field
+    # NimbleCSV format: %{["@", "+", "-", "=", "\t", "\r"] => "'"}
+    # Convert to list of {keys, value} pairs, then generate case clauses
+    pairs = Enum.to_list(escape_formula)
+
+    clauses =
+      for {keys, value} <- pairs,
+          key <- keys do
+        quote do
+          <<unquote(key) <> _>> -> unquote(value)
         end
       end
 
-      defp maybe_escape_formula(field), do: field
+    catch_all = quote do: (_ -> [])
+    all_clauses = List.flatten(clauses) ++ catch_all
+
+    quote do
+      defp maybe_escape_formula(field) do
+        case field, do: unquote(all_clauses)
+      end
     end
   end
 end

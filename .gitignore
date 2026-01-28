@@ -1,0 +1,41 @@
+# Elixir/Mix
+/_build/
+/deps/
+/doc/
+/tmp/
+/.fetch
+erl_crash.dump
+*.ez
+*.beam
+
+# Hex package tarball
+rusty_csv-*.tar
+
+# Test coverage
+/cover/
+
+# Dialyzer
+/priv/plts/
+
+# Rust/Cargo
+/native/rustycsv/target/
+**/*.rs.bk
+
+# Compiled NIF
+/priv/native/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Benchmark artifacts
+/bench/*.csv
+/bench/data/

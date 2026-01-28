@@ -45,8 +45,14 @@ const ZeroCopyEmitter = struct {
                 const len = field_mod.unescapeField(raw, config, &self.unescape_buf);
                 term = beam.make(self.unescape_buf[0..len], .{});
             } else {
-                // Field too large for unescape buffer — emit raw (doubled escapes remain).
-                term = beam.make(raw, .{});
+                // Field exceeds stack buffer — heap-allocate for unescape
+                const heap_buf = memory.allocator.alloc(u8, raw.len) catch {
+                    self.collector.oom_occurred = true;
+                    return;
+                };
+                defer memory.allocator.free(heap_buf);
+                const len = field_mod.unescapeField(raw, config, heap_buf);
+                term = beam.make(heap_buf[0..len], .{});
             }
         } else if (self.env) |env_ptr| {
             // Zero-copy sub-binary

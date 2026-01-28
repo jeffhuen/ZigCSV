@@ -59,11 +59,20 @@ const ChunkEmitter = struct {
     pub fn onField(self: *ChunkEmitter, input: []const u8, start: usize, end: usize, needs_unescape: bool, config: *const Config) void {
         const raw = input[start..end];
 
-        const term = if (needs_unescape and raw.len <= self.unescape_buf.len) blk: {
+        const term = if (!needs_unescape) blk: {
+            break :blk beam.make(raw, .{});
+        } else if (raw.len <= self.unescape_buf.len) blk: {
             const len = field_mod.unescapeField(raw, config, &self.unescape_buf);
             break :blk beam.make(self.unescape_buf[0..len], .{});
         } else blk: {
-            break :blk beam.make(raw, .{});
+            // Field exceeds stack buffer — heap-allocate for unescape
+            const heap_buf = memory.allocator.alloc(u8, raw.len) catch {
+                self.collector.oom_occurred = true;
+                return;
+            };
+            defer memory.allocator.free(heap_buf);
+            const len = field_mod.unescapeField(raw, config, heap_buf);
+            break :blk beam.make(heap_buf[0..len], .{});
         };
 
         self.fields.append(memory.allocator, term) catch {

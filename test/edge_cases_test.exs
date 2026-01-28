@@ -10,6 +10,7 @@ defmodule EdgeCasesTest do
   use ExUnit.Case
 
   alias ZigCSV.RFC4180, as: CSV
+  alias NimbleCSV.RFC4180, as: Nimble
 
   describe "basic parsing" do
     test "empty input string" do
@@ -138,10 +139,12 @@ defmodule EdgeCasesTest do
     end
 
     test "CR only line endings" do
-      # Many parsers treat CR alone as line ending
-      result = CSV.parse_string("a,b\rc,d\r", skip_headers: false)
-      # Could be parsed as single row with embedded CR or multiple rows
-      assert is_list(result)
+      # ZigCSV treats bare CR as a line ending; NimbleCSV does not.
+      # This is an intentional ZigCSV behavior difference.
+      input = "a,b\rc,d\r"
+      assert CSV.parse_string(input, skip_headers: false) == [["a", "b"], ["c", "d"]]
+      # NimbleCSV treats bare CR as part of the field value
+      assert Nimble.parse_string(input, skip_headers: false) == [["a", "b\rc", "d\r"]]
     end
 
     test "mixed line endings" do
@@ -157,10 +160,8 @@ defmodule EdgeCasesTest do
 
   describe "field count variations" do
     test "rows with different field counts" do
-      # "Ragged" CSV - some parsers error, some accept
       result = CSV.parse_string("a,b,c\n1,2\n3,4,5,6\n", skip_headers: false)
-      assert length(result) == 3
-      assert hd(result) == ["a", "b", "c"]
+      assert result == [["a", "b", "c"], ["1", "2"], ["3", "4", "5", "6"]]
     end
 
     test "single column" do
@@ -171,6 +172,8 @@ defmodule EdgeCasesTest do
     test "many columns" do
       row = Enum.join(1..100, ",")
       result = CSV.parse_string(row <> "\n", skip_headers: false)
+      assert hd(hd(result)) == "1"
+      assert List.last(hd(result)) == "100"
       assert length(hd(result)) == 100
     end
   end
@@ -198,19 +201,18 @@ defmodule EdgeCasesTest do
     end
 
     test "UTF-8 BOM handling" do
-      # With trim_bom option
       bom = <<0xEF, 0xBB, 0xBF>>
       csv = bom <> "a,b\n1,2\n"
-      # Default (no trim) - BOM is part of first field
       result = CSV.parse_string(csv, skip_headers: false)
-      assert hd(hd(result)) == bom <> "a" or hd(hd(result)) == "a"
+      nimble_result = Nimble.parse_string(csv, skip_headers: false)
+      assert result == nimble_result
     end
   end
 
   describe "special characters in fields" do
     test "null bytes" do
       result = CSV.parse_string("a\x00b,c\n", skip_headers: false)
-      assert length(result) == 1
+      assert result == [["a\x00b", "c"]]
     end
 
     test "control characters" do
@@ -240,11 +242,15 @@ defmodule EdgeCasesTest do
       csv = Enum.map_join(1..1000, "\n", fn i -> "row#{i},#{i}" end) <> "\n"
       result = CSV.parse_string(csv, skip_headers: false)
       assert length(result) == 1000
+      assert hd(result) == ["row1", "1"]
+      assert List.last(result) == ["row1000", "1000"]
     end
 
     test "many columns" do
       row = Enum.map_join(1..500, ",", &"col#{&1}")
       result = CSV.parse_string(row <> "\n", skip_headers: false)
+      assert hd(hd(result)) == "col1"
+      assert List.last(hd(result)) == "col500"
       assert length(hd(result)) == 500
     end
   end
@@ -298,15 +304,12 @@ defmodule EdgeCasesTest do
     end
 
     test "quoted field larger than 64KB with escape sequences" do
-      # A quoted field with doubled quotes, larger than the unescape buffer.
-      # When the field overflows the buffer, doubled quotes are preserved as-is.
       inner = String.duplicate("a", 60_000) <> "\"\"" <> String.duplicate("b", 10_000)
       csv = "\"#{inner}\",end\n"
       result = CSV.parse_string(csv, skip_headers: false)
       field = hd(hd(result))
-      # Either the unescape worked (single quote) or fallback preserved raw (doubled quote)
-      assert String.contains?(field, "a") and String.contains?(field, "b")
-      assert byte_size(field) >= 70_000
+      expected = String.duplicate("a", 60_000) <> "\"" <> String.duplicate("b", 10_000)
+      assert field == expected
     end
   end
 
@@ -342,18 +345,6 @@ defmodule EdgeCasesTest do
   end
 
   describe "mid-field escape (quote inside unquoted field)" do
-    test "quote in middle of unquoted field raises ParseError" do
-      assert_raise ZigCSV.ParseError, ~r/unexpected escape character/, fn ->
-        CSV.parse_string("ab\"cd,ef\n", skip_headers: false)
-      end
-    end
-
-    test "quote at end of unquoted field raises ParseError" do
-      assert_raise ZigCSV.ParseError, ~r/unexpected escape character/, fn ->
-        CSV.parse_string("abc\",def\n", skip_headers: false)
-      end
-    end
-
     test "mid-field escape raises for all strategies" do
       for strategy <- [:basic, :simd, :parallel, :zero_copy] do
         assert_raise ZigCSV.ParseError, fn ->
@@ -376,12 +367,6 @@ defmodule EdgeCasesTest do
   end
 
   describe "no field limit" do
-    test "4096 columns" do
-      row = Enum.map_join(1..4096, ",", &"f#{&1}")
-      result = CSV.parse_string(row <> "\n", skip_headers: false)
-      assert length(hd(result)) == 4096
-    end
-
     test "5000 columns — no field limit" do
       row = Enum.map_join(1..5000, ",", &"f#{&1}")
       result = CSV.parse_string(row <> "\n", skip_headers: false)
@@ -404,17 +389,6 @@ defmodule EdgeCasesTest do
       assert length(result) == 2
       assert length(Enum.at(result, 0)) == 5000
       assert Enum.at(result, 1) == ["a", "b"]
-    end
-  end
-
-  describe "NIF return validation" do
-    test "zero_copy returns error atom for non-binary input" do
-      # The zero_copy strategy can return :error for invalid input terms.
-      # This should be caught and raised as ParseError.
-      # We can't easily trigger this from Elixir since parse_string
-      # always passes a binary, but we verify the guard works.
-      result = CSV.parse_string("a,b\n", skip_headers: false, strategy: :zero_copy)
-      assert is_list(result)
     end
   end
 

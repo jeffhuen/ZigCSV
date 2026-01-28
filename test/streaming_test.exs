@@ -66,7 +66,7 @@ defmodule StreamingTest do
       big = String.duplicate("x", 1_000_000)
       chunks = ["#{big},b\n"]
       result = ZigCSV.Streaming.parse_chunks(chunks)
-      assert length(result) == 1
+      assert hd(hd(result)) == big
     end
 
     test "stream_enumerable respects max_row_size" do

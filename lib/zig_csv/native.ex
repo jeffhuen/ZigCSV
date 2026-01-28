@@ -54,11 +54,20 @@ defmodule ZigCSV.Native do
       memory: {"./native/zig_csv/memory.zig", [:beam]},
       row_collector: {"./native/zig_csv/core/row_collector.zig", [:beam, :memory]},
       field: {"./native/zig_csv/core/field.zig", [:beam, :erl_nif, :types, :scanner]},
-      engine: {"./native/zig_csv/core/engine.zig", [:beam, :types, :scanner, :field, :row_collector]},
-      fast: {"./native/zig_csv/strategy/fast.zig", [:beam, :erl_nif, :types, :scanner, :field, :memory, :engine, :row_collector]},
-      basic: {"./native/zig_csv/strategy/basic.zig", [:beam, :erl_nif, :types, :scanner, :memory, :field, :fast]},
-      chunk: {"./native/zig_csv/strategy/chunk.zig", [:beam, :erl_nif, :types, :scanner, :memory, :fast, :field, :engine, :row_collector]},
-      zero_copy: {"./native/zig_csv/strategy/zero_copy.zig", [:beam, :erl_nif, :types, :scanner, :field, :memory, :engine, :row_collector]},
+      engine:
+        {"./native/zig_csv/core/engine.zig", [:beam, :types, :scanner, :field, :row_collector]},
+      fast:
+        {"./native/zig_csv/strategy/fast.zig",
+         [:beam, :erl_nif, :types, :scanner, :field, :memory, :engine, :row_collector]},
+      basic:
+        {"./native/zig_csv/strategy/basic.zig",
+         [:beam, :erl_nif, :types, :scanner, :memory, :field, :fast]},
+      chunk:
+        {"./native/zig_csv/strategy/chunk.zig",
+         [:beam, :erl_nif, :types, :scanner, :memory, :fast, :field, :engine, :row_collector]},
+      zero_copy:
+        {"./native/zig_csv/strategy/zero_copy.zig",
+         [:beam, :erl_nif, :types, :scanner, :field, :memory, :engine, :row_collector]},
       parallel: {"./native/zig_csv/strategy/parallel.zig", [:beam, :types, :fast]}
     ]
 

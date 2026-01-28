@@ -136,8 +136,12 @@ defmodule ZigCSVTest do
 
       assert TestMultiSep.parse_string(input, strategy: :basic, skip_headers: false) == expected
       assert TestMultiSep.parse_string(input, strategy: :simd, skip_headers: false) == expected
-      assert TestMultiSep.parse_string(input, strategy: :parallel, skip_headers: false) == expected
-      assert TestMultiSep.parse_string(input, strategy: :zero_copy, skip_headers: false) == expected
+
+      assert TestMultiSep.parse_string(input, strategy: :parallel, skip_headers: false) ==
+               expected
+
+      assert TestMultiSep.parse_string(input, strategy: :zero_copy, skip_headers: false) ==
+               expected
     end
 
     test "multi-separator options returns original separator" do
@@ -163,10 +167,17 @@ defmodule ZigCSVTest do
       input = "a||b||c\n1||2||3\n"
       expected = [["a", "b", "c"], ["1", "2", "3"]]
 
-      assert TestMultiByteSep.parse_string(input, strategy: :basic, skip_headers: false) == expected
-      assert TestMultiByteSep.parse_string(input, strategy: :simd, skip_headers: false) == expected
-      assert TestMultiByteSep.parse_string(input, strategy: :parallel, skip_headers: false) == expected
-      assert TestMultiByteSep.parse_string(input, strategy: :zero_copy, skip_headers: false) == expected
+      assert TestMultiByteSep.parse_string(input, strategy: :basic, skip_headers: false) ==
+               expected
+
+      assert TestMultiByteSep.parse_string(input, strategy: :simd, skip_headers: false) ==
+               expected
+
+      assert TestMultiByteSep.parse_string(input, strategy: :parallel, skip_headers: false) ==
+               expected
+
+      assert TestMultiByteSep.parse_string(input, strategy: :zero_copy, skip_headers: false) ==
+               expected
     end
   end
 
@@ -189,8 +200,12 @@ defmodule ZigCSVTest do
 
       assert TestMixedSep.parse_string(input, strategy: :basic, skip_headers: false) == expected
       assert TestMixedSep.parse_string(input, strategy: :simd, skip_headers: false) == expected
-      assert TestMixedSep.parse_string(input, strategy: :parallel, skip_headers: false) == expected
-      assert TestMixedSep.parse_string(input, strategy: :zero_copy, skip_headers: false) == expected
+
+      assert TestMixedSep.parse_string(input, strategy: :parallel, skip_headers: false) ==
+               expected
+
+      assert TestMixedSep.parse_string(input, strategy: :zero_copy, skip_headers: false) ==
+               expected
     end
   end
 
@@ -205,10 +220,17 @@ defmodule ZigCSVTest do
       input = "a,''b'',c\n"
       expected = [["a", "b", "c"]]
 
-      assert TestMultiByteEsc.parse_string(input, strategy: :basic, skip_headers: false) == expected
-      assert TestMultiByteEsc.parse_string(input, strategy: :simd, skip_headers: false) == expected
-      assert TestMultiByteEsc.parse_string(input, strategy: :parallel, skip_headers: false) == expected
-      assert TestMultiByteEsc.parse_string(input, strategy: :zero_copy, skip_headers: false) == expected
+      assert TestMultiByteEsc.parse_string(input, strategy: :basic, skip_headers: false) ==
+               expected
+
+      assert TestMultiByteEsc.parse_string(input, strategy: :simd, skip_headers: false) ==
+               expected
+
+      assert TestMultiByteEsc.parse_string(input, strategy: :parallel, skip_headers: false) ==
+               expected
+
+      assert TestMultiByteEsc.parse_string(input, strategy: :zero_copy, skip_headers: false) ==
+               expected
     end
   end
 end

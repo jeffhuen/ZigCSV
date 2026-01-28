@@ -559,7 +559,7 @@ defmodule ZigCSV do
       end
     end
 
-    if length(separators) == 0 do
+    if separators == [] do
       raise ArgumentError, "ZigCSV requires at least one separator"
     end
 
@@ -763,41 +763,58 @@ defmodule ZigCSV do
             :zero_copy -> ZigCSV.Native.parse_zero_copy(string, @encoded_seps, @escape)
           end
 
-        case result do
-          rows when is_list(rows) ->
-            rows
-
-          {:partial, :unterminated_escape, _rows} ->
-            raise ZigCSV.ParseError,
-              message: "expected escape character #{@escape} but reached the end of file"
-
-          {:partial, {:unexpected_escape, byte_pos}, _rows} ->
-            line = extract_error_line(string, byte_pos)
-
-            raise ZigCSV.ParseError,
-              message: "unexpected escape character #{@escape} in #{inspect(line)}"
-
-          {:partial, :oom, _rows} ->
-            raise ZigCSV.ParseError,
-              message: "out of memory during CSV parsing"
-
-          :error ->
-            raise ZigCSV.ParseError,
-              message: "NIF parse failed: could not inspect input binary"
-
-          other ->
-            raise ZigCSV.ParseError,
-              message: "unexpected NIF result: #{inspect(other)}"
-        end
+        handle_parse_result(result, string)
       end
 
+      unquote(quoted_handle_parse_result())
+      unquote(quoted_extract_error_line())
+    end
+  end
+
+  defp quoted_handle_parse_result do
+    quote do
+      defp handle_parse_result(rows, _string) when is_list(rows), do: rows
+
+      defp handle_parse_result({:partial, :unterminated_escape, _rows}, _string) do
+        raise ZigCSV.ParseError,
+          message: "expected escape character #{@escape} but reached the end of file"
+      end
+
+      defp handle_parse_result({:partial, {:unexpected_escape, byte_pos}, _rows}, string) do
+        line = extract_error_line(string, byte_pos)
+
+        raise ZigCSV.ParseError,
+          message: "unexpected escape character #{@escape} in #{inspect(line)}"
+      end
+
+      defp handle_parse_result({:partial, :oom, _rows}, _string) do
+        raise ZigCSV.ParseError,
+          message: "out of memory during CSV parsing"
+      end
+
+      defp handle_parse_result(:error, _string) do
+        raise ZigCSV.ParseError,
+          message: "NIF parse failed: could not inspect input binary"
+      end
+
+      defp handle_parse_result(other, _string) do
+        raise ZigCSV.ParseError,
+          message: "unexpected NIF result: #{inspect(other)}"
+      end
+    end
+  end
+
+  defp quoted_extract_error_line do
+    quote do
       defp extract_error_line(string, byte_pos) do
         byte_pos = min(byte_pos, byte_size(string))
         before = binary_part(string, 0, byte_pos)
 
         line_start =
           case :binary.matches(before, ["\r\n", "\n"]) do
-            [] -> 0
+            [] ->
+              0
+
             matches ->
               {pos, len} = List.last(matches)
               pos + len
@@ -922,33 +939,23 @@ defmodule ZigCSV do
     end
   end
 
+  # Encode a UTF-8 string to target encoding, using integer form for single bytes
+  # to match NimbleCSV's iodata structure
+  defp encode_delimiter(value, encoding) do
+    case :unicode.characters_to_binary(value, :utf8, encoding) do
+      <<x>> -> x
+      x -> x
+    end
+  end
+
   defp quoted_dumping_functions(config) do
     escape_formula_ast = quoted_escape_formula_function(config.escape_formula)
     maybe_to_encoding_ast = quoted_maybe_to_encoding(config.encoding)
     maybe_dump_bom_ast = quoted_maybe_dump_bom(config.dump_bom)
 
-    # Pre-encode delimiters at compile time — match NimbleCSV's integer encoding
-    # for single-byte values to produce identical iodata structure
-    encoded_separator =
-      case config.primary_separator
-           |> :unicode.characters_to_binary(:utf8, config.encoding) do
-        <<x>> -> x
-        x -> x
-      end
-
-    encoded_escape =
-      case config.escape
-           |> :unicode.characters_to_binary(:utf8, config.encoding) do
-        <<x>> -> x
-        x -> x
-      end
-
-    encoded_line_separator =
-      case config.line_separator
-           |> :unicode.characters_to_binary(:utf8, config.encoding) do
-        <<x>> -> x
-        x -> x
-      end
+    encoded_separator = encode_delimiter(config.primary_separator, config.encoding)
+    encoded_escape = encode_delimiter(config.escape, config.encoding)
+    encoded_line_separator = encode_delimiter(config.line_separator, config.encoding)
 
     quote do
       # Pre-encoded delimiters for dumping
@@ -989,6 +996,17 @@ defmodule ZigCSV do
         :binary.compile_pattern(@escape_chars)
       end
 
+      unquote(quoted_dump_helpers())
+
+      unquote(escape_formula_ast)
+      unquote(maybe_to_encoding_ast)
+
+      @compile {:inline, init_dumper: 0, maybe_escape: 2}
+    end
+  end
+
+  defp quoted_dump_helpers do
+    quote do
       defp dump([], _check) do
         [@encoded_line_separator]
       end
@@ -1019,11 +1037,6 @@ defmodule ZigCSV do
             [maybe_escape_formula(entry), maybe_to_encoding(entry)]
         end
       end
-
-      unquote(escape_formula_ast)
-      unquote(maybe_to_encoding_ast)
-
-      @compile {:inline, init_dumper: 0, maybe_escape: 2}
     end
   end
 

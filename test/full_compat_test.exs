@@ -39,118 +39,137 @@ defmodule FullCompatTest do
   describe "parse_string/2 compatibility" do
     test "simple CSV with headers skipped" do
       csv = simple_csv()
+
       assert Zig.parse_string(csv, skip_headers: true) ==
-             Nimble.parse_string(csv, skip_headers: true)
+               Nimble.parse_string(csv, skip_headers: true)
     end
 
     test "simple CSV without skipping headers" do
       csv = simple_csv()
+
       assert Zig.parse_string(csv, skip_headers: false) ==
-             Nimble.parse_string(csv, skip_headers: false)
+               Nimble.parse_string(csv, skip_headers: false)
     end
 
     test "CRLF line endings" do
       csv = simple_csv_crlf()
+
       assert Zig.parse_string(csv, skip_headers: true) ==
-             Nimble.parse_string(csv, skip_headers: true)
+               Nimble.parse_string(csv, skip_headers: true)
     end
 
     test "quoted fields with commas" do
       csv = quoted_csv()
+
       assert Zig.parse_string(csv, skip_headers: true) ==
-             Nimble.parse_string(csv, skip_headers: true)
+               Nimble.parse_string(csv, skip_headers: true)
     end
 
     test "multiline quoted fields" do
       csv = multiline_csv()
+
       assert Zig.parse_string(csv, skip_headers: true) ==
-             Nimble.parse_string(csv, skip_headers: true)
+               Nimble.parse_string(csv, skip_headers: true)
     end
 
     test "empty fields" do
       csv = empty_fields_csv()
+
       assert Zig.parse_string(csv, skip_headers: false) ==
-             Nimble.parse_string(csv, skip_headers: false)
+               Nimble.parse_string(csv, skip_headers: false)
     end
 
     test "whitespace preserved" do
       csv = whitespace_csv()
+
       assert Zig.parse_string(csv, skip_headers: false) ==
-             Nimble.parse_string(csv, skip_headers: false)
+               Nimble.parse_string(csv, skip_headers: false)
     end
 
     test "single column" do
       csv = single_column_csv()
+
       assert Zig.parse_string(csv, skip_headers: true) ==
-             Nimble.parse_string(csv, skip_headers: true)
+               Nimble.parse_string(csv, skip_headers: true)
     end
 
     test "no trailing newline" do
       csv = no_trailing_newline()
+
       assert Zig.parse_string(csv, skip_headers: true) ==
-             Nimble.parse_string(csv, skip_headers: true)
+               Nimble.parse_string(csv, skip_headers: true)
     end
 
     test "empty CSV" do
       csv = empty_csv()
+
       assert Zig.parse_string(csv, skip_headers: false) ==
-             Nimble.parse_string(csv, skip_headers: false)
+               Nimble.parse_string(csv, skip_headers: false)
     end
 
     test "only header row" do
       csv = only_header()
+
       assert Zig.parse_string(csv, skip_headers: true) ==
-             Nimble.parse_string(csv, skip_headers: true)
+               Nimble.parse_string(csv, skip_headers: true)
     end
 
     test "unicode content" do
       csv = unicode_csv()
+
       assert Zig.parse_string(csv, skip_headers: true) ==
-             Nimble.parse_string(csv, skip_headers: true)
+               Nimble.parse_string(csv, skip_headers: true)
     end
 
     test "complex mixed CSV" do
       csv = complex_csv()
+
       assert Zig.parse_string(csv, skip_headers: true) ==
-             Nimble.parse_string(csv, skip_headers: true)
+               Nimble.parse_string(csv, skip_headers: true)
     end
 
     test "quoted empty field" do
       csv = ~s("",a\n)
+
       assert Zig.parse_string(csv, skip_headers: false) ==
-             Nimble.parse_string(csv, skip_headers: false)
+               Nimble.parse_string(csv, skip_headers: false)
     end
 
     test "field with only quotes inside" do
       csv = ~s(""""\n)
+
       assert Zig.parse_string(csv, skip_headers: false) ==
-             Nimble.parse_string(csv, skip_headers: false)
+               Nimble.parse_string(csv, skip_headers: false)
     end
 
     test "multiple escaped quotes" do
       csv = ~s("a""b""c"\n)
+
       assert Zig.parse_string(csv, skip_headers: false) ==
-             Nimble.parse_string(csv, skip_headers: false)
+               Nimble.parse_string(csv, skip_headers: false)
     end
 
     test "quoted field with CRLF inside" do
       csv = ~s("line1\r\nline2"\n)
+
       assert Zig.parse_string(csv, skip_headers: false) ==
-             Nimble.parse_string(csv, skip_headers: false)
+               Nimble.parse_string(csv, skip_headers: false)
     end
 
     test "mixed quoted and unquoted" do
       csv = ~s(a,"b",c\n"d",e,"f"\n)
+
       assert Zig.parse_string(csv, skip_headers: false) ==
-             Nimble.parse_string(csv, skip_headers: false)
+               Nimble.parse_string(csv, skip_headers: false)
     end
   end
 
   describe "parse_enumerable/2 compatibility" do
     test "list of lines" do
       lines = ["name,age\n", "john,27\n", "jane,30\n"]
+
       assert Zig.parse_enumerable(lines, skip_headers: true) ==
-             Nimble.parse_enumerable(lines, skip_headers: true)
+               Nimble.parse_enumerable(lines, skip_headers: true)
     end
 
     # Note: ZigCSV handles arbitrary binary chunks better than NimbleCSV.
@@ -159,16 +178,25 @@ defmodule FullCompatTest do
       chunks = ["name,a", "ge\njohn,", "27\njane,30\n"]
       # ZigCSV correctly parses across chunk boundaries
       assert Zig.parse_enumerable(chunks, skip_headers: true) == [["john", "27"], ["jane", "30"]]
-      # NimbleCSV misparses because it doesn't buffer properly
-      # This is a ZigCSV improvement, not a compatibility issue
+      # NimbleCSV misparses chunked input because it treats each chunk as a
+      # complete line. It splits on newlines within each chunk independently,
+      # so partial lines at chunk boundaries produce wrong fields.
+      nimble_result = Nimble.parse_enumerable(chunks, skip_headers: true)
+
+      assert nimble_result != [["john", "27"], ["jane", "30"]],
+             "NimbleCSV unexpectedly handled chunked input correctly"
     end
 
     test "quoted field split across chunks - ZigCSV handles correctly" do
       chunks = ["name,comment\njohn,\"hel", "lo, world\"\n"]
       # ZigCSV correctly handles quoted fields split across chunks
       assert Zig.parse_enumerable(chunks, skip_headers: true) == [["john", "hello, world"]]
-      # NimbleCSV fails on this case (returns [])
-      # This is a ZigCSV improvement
+      # NimbleCSV returns [] because the quoted field is split across chunks
+      # and it doesn't buffer across chunk boundaries
+      nimble_result = Nimble.parse_enumerable(chunks, skip_headers: true)
+
+      assert nimble_result == [],
+             "NimbleCSV unexpectedly handled split quoted field correctly"
     end
   end
 
@@ -197,59 +225,67 @@ defmodule FullCompatTest do
       assert zig_result == nimble_result
     end
 
-    test "stream count matches" do
+    test "stream content matches" do
       csv = complex_csv()
-      File.write!("/tmp/compat_test.csv", csv)
+      path = "/tmp/compat_test_#{System.unique_integer([:positive])}.csv"
+      File.write!(path, csv)
+      on_exit(fn -> File.rm(path) end)
 
-      zig_count = File.stream!("/tmp/compat_test.csv")
-                  |> Zig.parse_stream(skip_headers: true)
-                  |> Enum.count()
+      zig_rows =
+        File.stream!(path)
+        |> Zig.parse_stream(skip_headers: true)
+        |> Enum.to_list()
 
-      nimble_count = File.stream!("/tmp/compat_test.csv")
-                     |> Nimble.parse_stream(skip_headers: true)
-                     |> Enum.count()
+      nimble_rows =
+        File.stream!(path)
+        |> Nimble.parse_stream(skip_headers: true)
+        |> Enum.to_list()
 
-      assert zig_count == nimble_count
-
-      File.rm!("/tmp/compat_test.csv")
+      assert zig_rows == nimble_rows
     end
   end
 
   describe "dump_to_iodata/1 compatibility" do
     test "simple rows" do
       rows = [["name", "age"], ["john", "27"]]
+
       assert IO.iodata_to_binary(Zig.dump_to_iodata(rows)) ==
-             IO.iodata_to_binary(Nimble.dump_to_iodata(rows))
+               IO.iodata_to_binary(Nimble.dump_to_iodata(rows))
     end
 
     test "rows with commas" do
       rows = [["name", "comment"], ["john", "hello, world"]]
+
       assert IO.iodata_to_binary(Zig.dump_to_iodata(rows)) ==
-             IO.iodata_to_binary(Nimble.dump_to_iodata(rows))
+               IO.iodata_to_binary(Nimble.dump_to_iodata(rows))
     end
 
     test "rows with quotes" do
       rows = [["name", "comment"], ["john", "say \"hi\""]]
+
       assert IO.iodata_to_binary(Zig.dump_to_iodata(rows)) ==
-             IO.iodata_to_binary(Nimble.dump_to_iodata(rows))
+               IO.iodata_to_binary(Nimble.dump_to_iodata(rows))
     end
 
     test "rows with newlines" do
       rows = [["name", "comment"], ["john", "line1\nline2"]]
+
       assert IO.iodata_to_binary(Zig.dump_to_iodata(rows)) ==
-             IO.iodata_to_binary(Nimble.dump_to_iodata(rows))
+               IO.iodata_to_binary(Nimble.dump_to_iodata(rows))
     end
 
     test "empty fields" do
       rows = [["a", "", "b"], ["", "c", ""]]
+
       assert IO.iodata_to_binary(Zig.dump_to_iodata(rows)) ==
-             IO.iodata_to_binary(Nimble.dump_to_iodata(rows))
+               IO.iodata_to_binary(Nimble.dump_to_iodata(rows))
     end
 
     test "integer and atom values" do
       rows = [["name", "count", "status"], ["item", 42, :active]]
+
       assert IO.iodata_to_binary(Zig.dump_to_iodata(rows)) ==
-             IO.iodata_to_binary(Nimble.dump_to_iodata(rows))
+               IO.iodata_to_binary(Nimble.dump_to_iodata(rows))
     end
   end
 

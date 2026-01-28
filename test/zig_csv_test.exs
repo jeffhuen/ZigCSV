@@ -17,6 +17,31 @@ ZigCSV.define(TestSSV,
   line_separator: "\n"
 )
 
+# Multi-separator parsers
+ZigCSV.define(TestMultiSep,
+  separator: [",", "|"],
+  escape: "\"",
+  line_separator: "\n"
+)
+
+ZigCSV.define(TestMultiByteSep,
+  separator: "||",
+  escape: "\"",
+  line_separator: "\n"
+)
+
+ZigCSV.define(TestMixedSep,
+  separator: [",", "||"],
+  escape: "\"",
+  line_separator: "\n"
+)
+
+ZigCSV.define(TestMultiByteEsc,
+  separator: ",",
+  escape: "''",
+  line_separator: "\n"
+)
+
 defmodule ZigCSVTest do
   use ExUnit.Case
 
@@ -91,6 +116,101 @@ defmodule ZigCSVTest do
       ssv = "a;b;c\n1;2;3\n"
       result = TestSSV.parse_string(ssv, skip_headers: false)
       assert result == [["a", "b", "c"], ["1", "2", "3"]]
+    end
+  end
+
+  describe "multi-separator support" do
+    test "comma and pipe separators" do
+      input = "a,b|c\n1|2,3\n"
+      result = TestMultiSep.parse_string(input, skip_headers: false)
+      assert result == [["a", "b", "c"], ["1", "2", "3"]]
+    end
+
+    test "multi-separator with quoted fields" do
+      input = "a,\"b|c\"|d\n"
+      result = TestMultiSep.parse_string(input, skip_headers: false)
+      assert result == [["a", "b|c", "d"]]
+    end
+
+    test "multi-separator with all strategies" do
+      input = "a,b|c\n1|2,3\n"
+      expected = [["a", "b", "c"], ["1", "2", "3"]]
+
+      assert TestMultiSep.parse_string(input, strategy: :basic, skip_headers: false) == expected
+      assert TestMultiSep.parse_string(input, strategy: :simd, skip_headers: false) == expected
+      assert TestMultiSep.parse_string(input, strategy: :parallel, skip_headers: false) == expected
+      assert TestMultiSep.parse_string(input, strategy: :zero_copy, skip_headers: false) == expected
+    end
+
+    test "multi-separator options returns original separator" do
+      opts = TestMultiSep.options()
+      assert opts[:separator] == [",", "|"]
+    end
+  end
+
+  describe "multi-byte separator support" do
+    test "double-pipe separator" do
+      input = "a||b||c\n1||2||3\n"
+      result = TestMultiByteSep.parse_string(input, skip_headers: false)
+      assert result == [["a", "b", "c"], ["1", "2", "3"]]
+    end
+
+    test "multi-byte separator with quoted fields" do
+      input = "a||\"b||c\"||d\n"
+      result = TestMultiByteSep.parse_string(input, skip_headers: false)
+      assert result == [["a", "b||c", "d"]]
+    end
+
+    test "multi-byte separator with all strategies" do
+      input = "a||b||c\n1||2||3\n"
+      expected = [["a", "b", "c"], ["1", "2", "3"]]
+
+      assert TestMultiByteSep.parse_string(input, strategy: :basic, skip_headers: false) == expected
+      assert TestMultiByteSep.parse_string(input, strategy: :simd, skip_headers: false) == expected
+      assert TestMultiByteSep.parse_string(input, strategy: :parallel, skip_headers: false) == expected
+      assert TestMultiByteSep.parse_string(input, strategy: :zero_copy, skip_headers: false) == expected
+    end
+  end
+
+  describe "mixed single and multi-byte separators" do
+    test "comma and double-pipe separators" do
+      input = "a,b||c\n1||2,3\n"
+      result = TestMixedSep.parse_string(input, skip_headers: false)
+      assert result == [["a", "b", "c"], ["1", "2", "3"]]
+    end
+
+    test "mixed separators with quoted fields" do
+      input = "a,\"b||c\"||d\n"
+      result = TestMixedSep.parse_string(input, skip_headers: false)
+      assert result == [["a", "b||c", "d"]]
+    end
+
+    test "mixed separators with all strategies" do
+      input = "a,b||c\n1||2,3\n"
+      expected = [["a", "b", "c"], ["1", "2", "3"]]
+
+      assert TestMixedSep.parse_string(input, strategy: :basic, skip_headers: false) == expected
+      assert TestMixedSep.parse_string(input, strategy: :simd, skip_headers: false) == expected
+      assert TestMixedSep.parse_string(input, strategy: :parallel, skip_headers: false) == expected
+      assert TestMixedSep.parse_string(input, strategy: :zero_copy, skip_headers: false) == expected
+    end
+  end
+
+  describe "multi-byte escape support" do
+    test "double-single-quote escape" do
+      input = "a,b,c\n''hello'',world,''foo''''bar''\n"
+      result = TestMultiByteEsc.parse_string(input, skip_headers: false)
+      assert result == [["a", "b", "c"], ["hello", "world", "foo''bar"]]
+    end
+
+    test "multi-byte escape with all strategies" do
+      input = "a,''b'',c\n"
+      expected = [["a", "b", "c"]]
+
+      assert TestMultiByteEsc.parse_string(input, strategy: :basic, skip_headers: false) == expected
+      assert TestMultiByteEsc.parse_string(input, strategy: :simd, skip_headers: false) == expected
+      assert TestMultiByteEsc.parse_string(input, strategy: :parallel, skip_headers: false) == expected
+      assert TestMultiByteEsc.parse_string(input, strategy: :zero_copy, skip_headers: false) == expected
     end
   end
 end

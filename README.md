@@ -3,7 +3,7 @@
 **Ultra-fast CSV parsing for Elixir.** A purpose-built Zig NIF with six parsing strategies, SIMD acceleration, and bounded-memory streaming. Drop-in replacement for NimbleCSV.
 
 [![Hex.pm](https://img.shields.io/hexpm/v/zig_csv.svg)](https://hex.pm/packages/zig_csv)
-[![Tests](https://img.shields.io/badge/tests-149%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-201%20passed-brightgreen.svg)]()
 [![RFC 4180](https://img.shields.io/badge/RFC%204180-compliant-blue.svg)]()
 
 ## Why ZigCSV?
@@ -38,7 +38,8 @@
 | **Memory model** | ✅ Choice of copy or sub-binary | Sub-binary only |
 | **Stack-allocated parsing** | ✅ Zero heap allocation for parsing | Heap-based |
 | **Drop-in replacement** | ✅ Same API | - |
-| **RFC 4180 compliant** | ✅ 149 tests | ✅ |
+| **Multi-separator** | ✅ `[",", "\|"]`, multi-byte `"\|\|"` | ✅ |
+| **RFC 4180 compliant** | ✅ 201 tests | ✅ |
 | **Benchmark (4MB CSV)** | ~10ms | ~87ms |
 
 ## Purpose-Built for Elixir
@@ -190,16 +191,40 @@ ZigCSV.define(MyApp.PSV,
   line_separator: "\n"
 )
 
+# Multiple separators (NimbleCSV-compatible)
+ZigCSV.define(MyApp.FlexCSV,
+  separator: [",", "|"],
+  escape: "\""
+)
+
+# Multi-byte separator
+ZigCSV.define(MyApp.DoublePipe,
+  separator: "||",
+  escape: "\""
+)
+
+# Mixed single and multi-byte separators
+ZigCSV.define(MyApp.Mixed,
+  separator: [",", "||"],
+  escape: "\""
+)
+
 MyApp.TSV.parse_string("a\tb\tc\n1\t2\t3\n")
 #=> [["1", "2", "3"]]
+
+MyApp.FlexCSV.parse_string("a,b|c\n", skip_headers: false)
+#=> [["a", "b", "c"]]
+
+MyApp.DoublePipe.parse_string("a||b||c\n", skip_headers: false)
+#=> [["a", "b", "c"]]
 ```
 
 ### Define Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `:separator` | Field separator (any single byte) | `","` |
-| `:escape` | Quote character | `"\""` |
+| `:separator` | Field separator: a string, list of strings, or multi-byte pattern | `","` |
+| `:escape` | Quote/escape string (can be multi-byte) | `"\""` |
 | `:line_separator` | Line ending for dumps | `"\r\n"` |
 | `:newlines` | Accepted line endings | `["\r\n", "\n"]` |
 | `:encoding` | Character encoding (see below) | `:utf8` |
@@ -246,8 +271,9 @@ ZigCSV is **fully RFC 4180 compliant** and validated against industry-standard t
 | Edge cases (PapaParse-inspired) | 53 | ✅ All pass |
 | NimbleCSV compat | 26 | ✅ All pass |
 | Encoding (UTF-16, Latin-1, etc.) | 20 | ✅ All pass |
+| Multi-separator & multi-byte | 12 | ✅ All pass |
 | Core functionality | 10 | ✅ All pass |
-| **Total** | **149** | ✅ |
+| **Total** | **201** | ✅ |
 
 See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for full compliance details.
 
@@ -299,20 +325,35 @@ Each strategy takes a different approach. All share direct term building, but di
 
 ## Architecture
 
-ZigCSV uses inline Zig code via Zigler's `~Z` sigil for maximum performance:
+ZigCSV uses external Zig modules compiled via [Zigler](https://github.com/ityonemo/zigler):
 
 ```
 lib/
-├── zig_csv.ex          # Main module with define/2 macro
+├── zig_csv.ex              # Main module with define/2 macro
 └── zig_csv/
-    ├── native.ex       # Zig NIF (inline ~Z sigil)
-    │   ├── SIMD utilities (simdFindAny3, simdFindByte, simdCountByte)
-    │   ├── parseCSVFast - Stack-allocated SIMD parser
-    │   ├── parseCSVZeroCopy - Sub-binary zero-copy parser
-    │   ├── parse_chunk - Single-pass streaming (boundary + SIMD parse)
-    │   └── buildIndex/createTerms - Two-phase indexed parser
-    └── streaming.ex    # Streaming with single-pass NIF parsing
+    ├── native.ex           # NIF bindings (Zigler extra_modules)
+    └── streaming.ex        # Streaming with NIF batch parsing
+
+native/zig_csv/
+├── main.zig                # NIF entry points, config decoding
+├── memory.zig              # Memory tracking utilities
+├── core/
+│   ├── types.zig           # Config (multi-separator, multi-byte escape)
+│   ├── scanner.zig         # SIMD scanning (findNextDelimiter, simdFindAny3)
+│   ├── field.zig           # Field unescaping (multi-byte escape support)
+│   ├── engine.zig          # Shared generic parse engine
+│   └── row_collector.zig   # SmallVec row storage + list building
+└── strategy/
+    ├── fast.zig            # SIMD parser (:simd, default)
+    ├── basic.zig           # Delegates to fast (:basic)
+    ├── zero_copy.zig       # Sub-binary references (:zero_copy)
+    ├── chunk.zig           # Chunk parser for streaming
+    └── parallel.zig        # Multi-threaded (:parallel)
 ```
+
+The core `engine.zig` is a generic parse engine parameterized over an emitter type.
+Each strategy defines a thin emitter (~30-50 lines) that plugs into the shared engine,
+eliminating duplicated parsing logic.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed implementation notes.
 
@@ -378,7 +419,7 @@ mix deps.get
 # Compile (includes Zig NIF via Zigler)
 mix compile
 
-# Run tests (149 tests)
+# Run tests (201 tests)
 mix test
 
 # Run benchmarks

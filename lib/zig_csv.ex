@@ -30,6 +30,25 @@ defmodule ZigCSV do
       MyParser.parse_string("a,b\n1,2\n")
       #=> [["1", "2"]]
 
+  ## Multi-Separator Support
+
+  ZigCSV supports multiple separators (NimbleCSV-compatible):
+
+      ZigCSV.define(MyParser,
+        separator: [",", "|"],
+        escape: "\""
+      )
+
+      MyParser.parse_string("a,b|c\n", skip_headers: false)
+      #=> [["a", "b", "c"]]
+
+  Multi-byte separators are also supported:
+
+      ZigCSV.define(MyParser,
+        separator: "||",
+        escape: "\""
+      )
+
   ## Parsing Strategies
 
   ZigCSV supports multiple parsing strategies via the `:strategy` option:
@@ -192,8 +211,12 @@ defmodule ZigCSV do
 
   ## Parsing Options
 
-    * `:separator` - Field separator character. Defaults to `","`.
-    * `:escape` - Escape/quote character. Defaults to `"\""`.
+    * `:separator` - Field separator. A string like `","` or a list of strings
+      like `[",", "|"]` for multi-separator support. Multi-byte separators
+      like `"||"` are also supported. Defaults to `","`.
+
+    * `:escape` - Escape/quote string. Can be multi-byte. Defaults to `"\""`.
+
     * `:newlines` - List of recognized line endings. Defaults to `["\r\n", "\n"]`.
     * `:trim_bom` - Remove BOM when parsing strings. Defaults to `false`.
     * `:encoding` - Character encoding. Defaults to `:utf8`. See `t:encoding/0`.
@@ -201,7 +224,9 @@ defmodule ZigCSV do
   ## Dumping Options
 
     * `:line_separator` - Line separator for output. Defaults to `"\n"`.
+
     * `:dump_bom` - Include BOM in output. Defaults to `false`.
+
     * `:reserved` - Additional characters requiring escaping.
     * `:escape_formula` - Map for formula injection prevention. Defaults to `nil`.
 
@@ -212,7 +237,7 @@ defmodule ZigCSV do
 
   """
   @type define_options :: [
-          separator: String.t(),
+          separator: String.t() | [String.t()],
           escape: String.t(),
           newlines: [String.t()],
           line_separator: String.t(),
@@ -309,9 +334,12 @@ defmodule ZigCSV do
 
   ### Parsing Options
 
-    * `:separator` - The field separator character. Defaults to `","`.
+    * `:separator` - The field separator. A string like `","` or a list of strings
+      like `[",", "|"]`. Multi-byte separators like `"||"` are also supported.
+      Defaults to `","`.
 
-    * `:escape` - The escape/quote character. Defaults to `"\""`.
+    * `:escape` - The escape/quote string. Can be multi-byte.
+      Defaults to `"\""`.
 
     * `:newlines` - List of recognized line endings for parsing.
       Defaults to `["\r\n", "\n"]`. Both CRLF and LF are always recognized.
@@ -376,6 +404,12 @@ defmodule ZigCSV do
       MyApp.CSV.parse_string("a,b\n1,2\n")
       #=> [["1", "2"]]
 
+      # Define a multi-separator parser
+      ZigCSV.define(MyApp.FlexCSV,
+        separator: [",", "|"],
+        escape: "\""
+      )
+
       # Define a UTF-16 spreadsheet parser
       ZigCSV.define(MyApp.Spreadsheet,
         separator: "\t",
@@ -397,6 +431,38 @@ defmodule ZigCSV do
   end
 
   # ==========================================================================
+  # Separator Encoding
+  # ==========================================================================
+
+  @doc """
+  Encodes a list of separator strings into the binary format expected by NIF functions.
+
+  The encoded format is `<<count::8, len1::8, sep1::binary-size(len1), ...>>`.
+
+  ## Examples
+
+      iex> ZigCSV.encode_separators([","])
+      <<1, 1, ?,>>
+
+      iex> ZigCSV.encode_separators([",", "|"])
+      <<2, 1, ?,, 1, ?|>>
+
+      iex> ZigCSV.encode_separators("||")
+      <<1, 2, ?|, ?|>>
+
+  """
+  @spec encode_separators(String.t() | [String.t()]) :: binary()
+  def encode_separators(separators) when is_list(separators) do
+    count = length(separators)
+    encoded_parts = for sep <- separators, do: <<byte_size(sep)::8, sep::binary>>
+    <<count::8, IO.iodata_to_binary(encoded_parts)::binary>>
+  end
+
+  def encode_separators(separator) when is_binary(separator) do
+    encode_separators([separator])
+  end
+
+  # ==========================================================================
   # Private: Option Extraction and Validation
   # ==========================================================================
 
@@ -404,11 +470,13 @@ defmodule ZigCSV do
     separator = Keyword.get(options, :separator, ",")
     escape = Keyword.get(options, :escape, "\"")
 
-    validate_single_byte!(:separator, separator)
-    validate_single_byte!(:escape, escape)
+    # Normalize separator to list
+    separators = normalize_separators(separator)
+    validate_separators!(separators)
+    validate_escape!(escape)
 
-    <<separator_byte>> = separator
-    <<escape_byte>> = escape
+    # For dumping, use the first separator
+    primary_separator = hd(separators)
 
     line_separator = Keyword.get(options, :line_separator, "\n")
     newlines = Keyword.get(options, :newlines, ["\r\n", "\n"])
@@ -425,7 +493,11 @@ defmodule ZigCSV do
     bom = :unicode.encoding_to_bom(encoding)
     encoded_newlines = Enum.map(newlines, &:unicode.characters_to_binary(&1, :utf8, encoding))
 
-    escape_chars = [separator, escape, "\n", "\r"] ++ reserved
+    # Encode config for NIF
+    encoded_seps = encode_separators(separators)
+
+    # Build escape_chars including all separator patterns
+    escape_chars = separators ++ [escape, "\n", "\r"] ++ reserved
 
     stored_options = [
       separator: separator,
@@ -442,9 +514,10 @@ defmodule ZigCSV do
 
     %{
       separator: separator,
-      separator_byte: separator_byte,
+      separators: separators,
+      primary_separator: primary_separator,
+      encoded_seps: encoded_seps,
       escape: escape,
-      escape_byte: escape_byte,
       line_separator: line_separator,
       newlines: newlines,
       trim_bom: trim_bom,
@@ -460,10 +533,40 @@ defmodule ZigCSV do
     }
   end
 
-  defp validate_single_byte!(name, value) do
-    unless is_binary(value) and byte_size(value) == 1 do
+  defp normalize_separators(sep) when is_binary(sep), do: [sep]
+  defp normalize_separators(seps) when is_list(seps), do: seps
+
+  defp validate_separators!(separators) do
+    for sep <- separators do
+      unless is_binary(sep) and byte_size(sep) > 0 do
+        raise ArgumentError,
+              "ZigCSV requires each separator to be a non-empty binary, got: #{inspect(sep)}"
+      end
+
+      if byte_size(sep) > 16 do
+        raise ArgumentError,
+              "ZigCSV separator must be at most 16 bytes, got: #{inspect(sep)} (#{byte_size(sep)} bytes)"
+      end
+    end
+
+    if length(separators) == 0 do
+      raise ArgumentError, "ZigCSV requires at least one separator"
+    end
+
+    if length(separators) > 8 do
+      raise ArgumentError, "ZigCSV supports at most 8 separators, got: #{length(separators)}"
+    end
+  end
+
+  defp validate_escape!(escape) do
+    unless is_binary(escape) and byte_size(escape) > 0 do
       raise ArgumentError,
-            "ZigCSV requires a single-byte #{name}, got: #{inspect(value)}"
+            "ZigCSV requires escape to be a non-empty binary, got: #{inspect(escape)}"
+    end
+
+    if byte_size(escape) > 16 do
+      raise ArgumentError,
+            "ZigCSV escape must be at most 16 bytes, got: #{inspect(escape)} (#{byte_size(escape)} bytes)"
     end
   end
 
@@ -504,10 +607,10 @@ defmodule ZigCSV do
       @moduledoc unquote(Macro.escape(config.moduledoc))
       @behaviour ZigCSV
 
-      @separator unquote(Macro.escape(config.separator))
-      @separator_byte unquote(Macro.escape(config.separator_byte))
+      @separator unquote(Macro.escape(config.primary_separator))
+      @separators unquote(Macro.escape(config.separators))
+      @encoded_seps unquote(Macro.escape(config.encoded_seps))
       @escape unquote(Macro.escape(config.escape))
-      @escape_byte unquote(Macro.escape(config.escape_byte))
       @line_separator unquote(Macro.escape(config.line_separator))
       @newlines unquote(Macro.escape(config.newlines))
       @trim_bom unquote(Macro.escape(config.trim_bom))
@@ -634,23 +737,23 @@ defmodule ZigCSV do
   defp quoted_do_parse_string_clauses do
     quote do
       defp do_parse_string(string, :basic) do
-        ZigCSV.Native.parse_string_with_config(string, @separator_byte, @escape_byte)
+        ZigCSV.Native.parse_basic(string, @encoded_seps, @escape)
       end
 
       defp do_parse_string(string, :simd) do
-        ZigCSV.Native.parse_string_fast_with_config(string, @separator_byte, @escape_byte)
+        ZigCSV.Native.parse_fast(string, @encoded_seps, @escape)
       end
 
       defp do_parse_string(string, :indexed) do
-        ZigCSV.Native.parse_string_indexed_with_config(string, @separator_byte, @escape_byte)
+        ZigCSV.Native.parse_fast(string, @encoded_seps, @escape)
       end
 
       defp do_parse_string(string, :parallel) do
-        ZigCSV.Native.parse_string_parallel_with_config(string, @separator_byte, @escape_byte)
+        ZigCSV.Native.parse_parallel(string, @encoded_seps, @escape)
       end
 
       defp do_parse_string(string, :zero_copy) do
-        ZigCSV.Native.parse_string_zero_copy_with_config(string, @separator_byte, @escape_byte)
+        ZigCSV.Native.parse_zero_copy(string, @encoded_seps, @escape)
       end
     end
   end
@@ -673,8 +776,8 @@ defmodule ZigCSV do
           ZigCSV.Streaming.stream_enumerable(stream,
             chunk_size: chunk_size,
             batch_size: batch_size,
-            separator: @separator_byte,
-            escape: @escape_byte,
+            encoded_seps: @encoded_seps,
+            escape: @escape,
             encoding: @encoding,
             bom: @bom,
             trim_bom: @trim_bom
@@ -766,7 +869,7 @@ defmodule ZigCSV do
     maybe_to_encoding_ast = quoted_maybe_to_encoding(config.encoding)
 
     # Pre-encode delimiters at compile time for non-UTF8 encodings
-    encoded_separator = :unicode.characters_to_binary(config.separator, :utf8, config.encoding)
+    encoded_separator = :unicode.characters_to_binary(config.primary_separator, :utf8, config.encoding)
     encoded_escape = :unicode.characters_to_binary(config.escape, :utf8, config.encoding)
 
     encoded_line_separator =

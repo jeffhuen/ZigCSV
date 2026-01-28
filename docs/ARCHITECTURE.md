@@ -46,7 +46,7 @@ ZigCSV offers unmatched flexibility with six parsing strategies:
 
 ### Validated Correctness
 
-- **149 tests** covering RFC 4180, industry test suites, edge cases, and encodings
+- **201 tests** covering RFC 4180, industry test suites, edge cases, encodings, and multi-separator/multi-byte patterns
 - **Cross-strategy validation** - All strategies produce identical output
 - **NimbleCSV compatibility** - Verified identical behavior for all API functions
 
@@ -100,8 +100,8 @@ ZigCSV implements the complete NimbleCSV API:
 
 | Option | NimbleCSV | ZigCSV | Status |
 |--------|-----------|----------|--------|
-| `:separator` | ✅ Any | ✅ Any single-byte | ✅ |
-| `:escape` | ✅ Any | ✅ Any single-byte | ✅ |
+| `:separator` | ✅ Any | ✅ String, list of strings, multi-byte | ✅ |
+| `:escape` | ✅ Any | ✅ String, multi-byte | ✅ |
 | `:line_separator` | ✅ | ✅ | ✅ |
 | `:newlines` | ✅ | ✅ | ✅ |
 | `:trim_bom` | ✅ | ✅ | ✅ |
@@ -125,12 +125,23 @@ alias ZigCSV.RFC4180, as: CSV
 
 ### ZigCSV Extensions
 
-ZigCSV adds one additional option not in NimbleCSV:
+ZigCSV adds options beyond NimbleCSV:
 
 ```elixir
 # Choose parsing strategy (ZigCSV only)
 CSV.parse_string(data, strategy: :parallel)
 CSV.parse_string(data, strategy: :zero_copy)
+
+# Multi-separator and multi-byte separator support
+ZigCSV.define(MyParser,
+  separator: [",", "|"],    # Split on comma OR pipe
+  escape: "\""
+)
+
+ZigCSV.define(MyParser,
+  separator: "||",          # Multi-byte separator
+  escape: "''"              # Multi-byte escape
+)
 ```
 
 ## Parsing Strategies
@@ -173,28 +184,54 @@ Speed-sensitive  :zero_copy (sub-binaries, keeps input alive)
 lib/
 ├── zig_csv.ex              # Main module with define/2 macro, types, specs
 └── zig_csv/
-    ├── native.ex           # Zig NIF via Zigler ~Z sigil
-    │   │
-    │   │  // Core Types
-    │   ├── Config struct (separator, escape bytes)
-    │   ├── FieldBoundary (start, end, needs_unescape)
-    │   │
-    │   │  // SIMD Utilities (32-byte vectors)
-    │   ├── simdFindAny3()   # Find separator, \n, or \r
-    │   ├── simdFindByte()   # Find single delimiter
-    │   ├── simdCountByte()  # Count occurrences
-    │   │
-    │   │  // Parsing Strategies
-    │   ├── parseCSVFast()       # Stack-allocated SIMD parser
-    │   ├── parseCSVZeroCopy()   # Sub-binary zero-copy parser
-    │   ├── buildIndex()         # Phase 1: index field boundaries
-    │   └── createTerms()        # Phase 2: create BEAM terms
-    │
+    ├── native.ex           # NIF bindings via Zigler extra_modules
     └── streaming.ex        # Elixir streaming with NIF batch parsing
         ├── stream_file/2
         ├── stream_enumerable/2
         └── parse_chunks/2
+
+native/zig_csv/
+├── main.zig                # NIF entry points, config decoding, streaming resource
+├── memory.zig              # Memory tracking utilities
+├── core/
+│   ├── types.zig           # Config struct (multi-separator, multi-byte escape)
+│   ├── scanner.zig         # SIMD scanning (simdFindAny3, findNextDelimiter, findPattern)
+│   ├── field.zig           # Field unescaping with multi-byte escape support
+│   ├── engine.zig          # Shared generic parse engine (ParseEngine(Emitter))
+│   └── row_collector.zig   # SmallVec row storage + cons-cell list building
+└── strategy/
+    ├── fast.zig            # FastEmitter → SIMD parser (:simd)
+    ├── basic.zig           # Delegates to fast (:basic)
+    ├── zero_copy.zig       # Sub-binary references (:zero_copy)
+    ├── chunk.zig           # ChunkEmitter → streaming chunk parser
+    └── parallel.zig        # Multi-threaded (:parallel)
 ```
+
+### Shared Parse Engine
+
+The core `engine.zig` defines `ParseEngine(comptime Emitter: type)`, a generic parse
+engine that implements the CSV parsing loop once. Each strategy provides a thin emitter
+type (~30-50 lines) implementing:
+
+  - `canAddField()` - check if field buffer has capacity
+  - `onField(input, start, end, needs_unescape, config)` - emit one field
+  - `onRowEnd(is_complete)` - finalize current row
+  - `finish()` - build final return value
+
+This eliminates ~240 lines of duplicated parsing logic across strategy files.
+
+### Multi-Separator Config
+
+The `Config` struct in `types.zig` supports:
+
+  - Up to 8 separator patterns, each up to 16 bytes
+  - Escape pattern up to 16 bytes
+  - All stack-allocated (~160 bytes, no heap)
+  - Runtime fast paths: `isSingleByteSep()` and `isSingleByteEsc()` branch to existing
+    SIMD routines for the common single-byte case
+
+Config is encoded for NIF transport as a length-prefixed binary:
+`<<count::8, len1::8, sep1::binary-size(len1), len2::8, sep2::binary-size(len2), ...>>`
 
 ## Implementation Details
 
@@ -242,32 +279,27 @@ This approach:
 - Uses `@reduce(.Or, ...)` to check if any match exists
 - Uses `@ctz` (count trailing zeros) to find the first match position
 
-### Quote Handling with In-Place Unescaping
+### Quote Handling with Unescaping
 
-All strategies properly handle CSV quote escaping (doubled quotes `""` → `"`):
+All strategies properly handle CSV quote escaping (doubled quotes `""` → `"`).
+The `unescapeField` function in `field.zig` supports both single-byte and
+multi-byte escape patterns:
 
 ```zig
-fn unescapeInPlace(input: []const u8, escape: u8, output: []u8) usize {
-    var write_idx: usize = 0;
-    var read_idx: usize = 0;
-
-    while (read_idx < input.len) {
-        if (input[read_idx] == escape and
-            read_idx + 1 < input.len and
-            input[read_idx + 1] == escape) {
-            // Doubled escape "" -> single "
-            output[write_idx] = escape;
-            write_idx += 1;
-            read_idx += 2;
-        } else {
-            output[write_idx] = input[read_idx];
-            write_idx += 1;
-            read_idx += 1;
-        }
+// Multi-byte escape support: e.g., escape="''" means ''''→''
+pub fn unescapeField(input: []const u8, config: *const Config, output: []u8) usize {
+    if (config.isSingleByteEsc()) {
+        return unescapeSingleByte(input, config.escByte(), output);
     }
-    return write_idx;
+    // General multi-byte path: scan for doubled escape patterns
+    const esc = config.getEscape();
+    const esc_len = config.esc_len;
+    // ... scan and copy, skipping one copy of each doubled escape
 }
 ```
+
+For single-byte escapes, the fast path compiles to the same code as the
+original implementation with no overhead.
 
 ### SmallVec-Style Memory Management
 
@@ -309,72 +341,80 @@ This approach:
 
 ### Strategy A: Basic Parser (`:basic`)
 
-Simple byte-by-byte parsing for debugging and correctness validation. Uses the same SmallVec-style buffers but without SIMD acceleration.
+Delegates to the fast parser. The scanner module includes a scalar fallback path
+that activates for the final < 32 bytes, so basic and SIMD produce identical results.
+Kept as a separate API entry point for backward compatibility.
 
 ### Strategy B: SIMD Parser (`:simd`) - Default
 
-The fastest general-purpose strategy using SIMD-accelerated delimiter scanning:
+The fastest general-purpose strategy using SIMD-accelerated delimiter scanning.
+Implemented as a thin `FastEmitter` plugged into the shared `ParseEngine`:
 
 ```zig
-// Main parsing loop
-while (pos <= input.len and row_count < row_terms.len) {
-    // Parse fields in this row
-    while (!row_done and field_count < field_buf.len) {
-        if (input[pos] == config.escape) {
-            // Quoted field - SIMD scan for closing quote
-            // ...
+// FastEmitter — the complete strategy implementation (~50 lines)
+const FastEmitter = struct {
+    collector: RowCollector = .{},
+    field_buf: [MAX_FIELDS]beam.term = undefined,
+    unescape_buf: [65536]u8 = undefined,
+    field_count: usize = 0,
+
+    pub fn onField(self: *FastEmitter, input: []const u8,
+                   start: usize, end: usize, needs_unescape: bool,
+                   config: *const Config) void {
+        if (needs_unescape) {
+            const len = field_mod.unescapeField(input[start..end], config, &self.unescape_buf);
+            self.field_buf[self.field_count] = beam.make(self.unescape_buf[0..len], .{});
         } else {
-            // Unquoted field - SIMD scan for delimiter
-            const remaining = input[start..];
-            if (simdFindAny3(remaining, config.separator, '\n', '\r')) |offset| {
-                pos = start + offset;
-            }
-            field_buf[field_count] = beam.make(input[start..pos], .{});
+            self.field_buf[self.field_count] = beam.make(input[start..end], .{});
         }
+        self.field_count += 1;
     }
-    // Build row list using cons cells (O(1) per element)
-    var field_list = beam.make_empty_list(.{});
-    var i: usize = field_count;
-    while (i > 0) {
-        i -= 1;
-        field_list = beam.make_list_cell(field_buf[i], field_list, .{});
+
+    pub fn onRowEnd(self: *FastEmitter, _: bool) void {
+        const field_list = row_collector.buildFieldList(&self.field_buf, self.field_count);
+        self.collector.addRow(field_list);
+        self.field_count = 0;
     }
-    row_terms[row_count] = field_list;
+
+    pub fn finish(self: *FastEmitter) beam.term {
+        return self.collector.buildList();
+    }
+};
+
+// Single public function — all parsing logic lives in the shared engine
+pub fn parseCSVFast(input: []const u8, config: Config) beam.term {
+    var emitter = FastEmitter{};
+    defer emitter.collector.deinit();
+    return engine.ParseEngine(FastEmitter).parse(input, config, &emitter);
 }
 ```
 
-### Strategy C: Two-Phase Index-then-Extract (`:indexed`)
+The shared engine handles quoted/unquoted field detection, separator matching
+(including multi-separator and multi-byte patterns), and newline handling.
+For single-byte separators, the engine's fast path uses `simdFindAny3` for
+maximum throughput.
 
-1. **Phase 1**: Build index of row/field boundaries using SIMD scanning
-2. **Phase 2**: Extract fields using the index
+### Strategy C: Indexed Parser (`:indexed`)
 
-```zig
-// Phase 1: Build index (FieldBoundary array)
-fn buildIndex(input, config, boundaries, row_starts) -> {field_count, row_count}
-
-// Phase 2: Create BEAM terms from index
-fn createTerms(input, config, boundaries, row_starts, ...) -> beam.term
-```
-
-Benefits: Better cache utilization, can skip rows, predictable memory.
+Currently delegates to the SIMD fast parser. The scanner module provides
+scalar fallback automatically, so no separate implementation is needed.
 
 ### Strategy D: Streaming Parser (`:streaming`)
 
 Implemented in pure Elixir for state management, with NIF batch parsing:
 
 ```elixir
-# State: {buffer, parsed_rows, separator, escape}
-# Each chunk: append to buffer, find complete rows, parse with NIF
-defp split_complete_rows(data, escape) do
-  last_newline = find_last_unquoted_newline(data, escape)
-  {complete_data, remaining}
-end
+# State: {buffer, parsed_rows, encoded_seps, escape}
+# Each chunk: append to buffer, find complete rows via NIF, parse with NIF
+{parsed, consumed} = ZigCSV.Native.parse_chunk_encoded(data, encoded_seps, escape)
+remaining = binary_part(data, consumed, byte_size(data) - consumed)
 ```
 
 Key features:
-- Quote-aware chunk splitting in Elixir
-- NIF batch parsing via `parse_string_fast_with_config`
+- Quote-aware chunk splitting via `findLastCompleteRow` in the Zig engine
+- NIF batch parsing via `parse_chunk_encoded` (boundary detection + parsing in one call)
 - Handles multi-byte encoding boundaries across chunks
+- Supports multi-separator and multi-byte separator/escape patterns
 
 ### Strategy E: Parallel Parser (`:parallel`)
 
@@ -572,6 +612,7 @@ See [COMPLIANCE.md](COMPLIANCE.md) for full details on test suites and validatio
 - **True parallel parsing** - Multi-threaded via `std.Thread`
 - **Memory tracking** - Instrument Zig allocations for profiling
 - **Error positions** - Line/column numbers in ParseError
+- **Streaming with multi-byte separators** - Full multi-byte boundary detection across chunks
 
 ## References
 

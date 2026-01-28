@@ -9,7 +9,7 @@ erl_crash.dump
 *.beam
 
 # Hex package tarball
-rusty_csv-*.tar
+zig_csv-*.tar
 
 # Test coverage
 /cover/
@@ -17,11 +17,11 @@ rusty_csv-*.tar
 # Dialyzer
 /priv/plts/
 
-# Rust/Cargo
-/native/rustycsv/target/
-**/*.rs.bk
+# Zig
+.zig-cache/
+zig-out/
 
-# Compiled NIF
+# Compiled NIF (development)
 /priv/native/
 
 # IDE
@@ -32,9 +32,15 @@ rusty_csv-*.tar
 *.swo
 *~
 
+# AI tools
+.opencode/
+
 # OS
 .DS_Store
 Thumbs.db
+
+# Development/sandbox
+/sandbox/
 
 # Benchmark artifacts
 /bench/*.csv

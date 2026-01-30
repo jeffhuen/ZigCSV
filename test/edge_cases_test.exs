@@ -9,8 +9,8 @@ defmodule EdgeCasesTest do
   """
   use ExUnit.Case
 
-  alias ZigCSV.RFC4180, as: CSV
   alias NimbleCSV.RFC4180, as: Nimble
+  alias ZigCSV.RFC4180, as: CSV
 
   describe "basic parsing" do
     test "empty input string" do

@@ -992,7 +992,7 @@ defmodule ZigCSV do
         |> maybe_dump_bom()
       end
 
-      defp init_dumper() do
+      defp init_dumper do
         :binary.compile_pattern(@escape_chars)
       end
 

@@ -7,8 +7,8 @@ defmodule FullCompatTest do
   """
   use ExUnit.Case
 
-  alias ZigCSV.RFC4180, as: Zig
   alias NimbleCSV.RFC4180, as: Nimble
+  alias ZigCSV.RFC4180, as: Zig
 
   # Test data generators
   defp simple_csv, do: "name,age\njohn,27\njane,30\n"

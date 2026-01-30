@@ -8,8 +8,8 @@ defmodule NimbleCSVCompatTest do
   """
   use ExUnit.Case
 
-  alias ZigCSV.RFC4180, as: CSV
   alias NimbleCSV.RFC4180, as: Nimble
+  alias ZigCSV.RFC4180, as: CSV
 
   describe "parse_string/2" do
     test "with headers (skip_headers: true to match NimbleCSV default)" do

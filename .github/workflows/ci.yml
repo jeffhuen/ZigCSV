@@ -43,11 +43,10 @@ jobs:
         key: ${{ runner.os }}-mix-${{matrix.pair.elixir}}-${{matrix.pair.otp}}-${{ hashFiles('**/mix.lock') }}
         restore-keys: ${{ runner.os }}-mix-${{matrix.pair.elixir}}-${{matrix.pair.otp}}-
 
-    - name: Cache Zig
-      uses: actions/cache@v4
+    - name: Set up Zig
+      uses: mlugg/setup-zig@v2
       with:
-        path: ~/.cache/zigler
-        key: ${{ runner.os }}-zigler-0.15
+        version: 0.15.2
 
     - name: Cache build
       uses: actions/cache@v4
@@ -58,9 +57,6 @@ jobs:
 
     - name: Install dependencies
       run: mix deps.get
-
-    - name: Install Zig
-      run: mix zig.get
 
     - name: Check formatting
       run: mix format --check-formatted

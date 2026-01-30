@@ -7,20 +7,40 @@ const beam = @import("beam");
 // resulting in zero runtime overhead.
 pub const memory_tracking_enabled = false;
 
-pub var memory_current: usize = 0;
-pub var memory_peak: usize = 0;
+// Atomic counters for thread-safe memory tracking across concurrent NIF calls.
+// Multiple BEAM schedulers may invoke NIFs simultaneously on different OS threads.
+var memory_current_atomic = std.atomic.Value(usize).init(0);
+var memory_peak_atomic = std.atomic.Value(usize).init(0);
 
 pub fn get_zig_memory() struct { usize, usize } {
-    return .{ memory_current, memory_peak };
+    return .{
+        memory_current_atomic.load(.monotonic),
+        memory_peak_atomic.load(.monotonic),
+    };
 }
 
 pub fn get_zig_memory_peak() usize {
-    return memory_peak;
+    return memory_peak_atomic.load(.monotonic);
 }
 
 pub fn reset_zig_memory_stats() void {
-    memory_current = 0;
-    memory_peak = 0;
+    memory_current_atomic.store(0, .monotonic);
+    memory_peak_atomic.store(0, .monotonic);
+}
+
+/// Atomically add to memory_current and update memory_peak if needed.
+fn trackAdd(len: usize) void {
+    const new = memory_current_atomic.fetchAdd(len, .monotonic) +% len;
+    // Racy peak update is acceptable — monotonic is sufficient for approximate tracking.
+    var peak = memory_peak_atomic.load(.monotonic);
+    while (new > peak) {
+        peak = memory_peak_atomic.cmpxchgWeak(peak, new, .monotonic, .monotonic) orelse break;
+    }
+}
+
+/// Atomically subtract from memory_current.
+fn trackSub(len: usize) void {
+    _ = memory_current_atomic.fetchSub(len, .monotonic);
 }
 
 // Tracking allocator - only compiled when memory_tracking_enabled
@@ -45,10 +65,7 @@ pub const TrackingAllocator = struct {
         const self: *TrackingAllocator = @ptrCast(@alignCast(ctx));
         const result = self.parent.rawAlloc(len, ptr_align, ret_addr);
         if (memory_tracking_enabled and result != null) {
-            memory_current += len;
-            if (memory_current > memory_peak) {
-                memory_peak = memory_current;
-            }
+            trackAdd(len);
         }
         return result;
     }
@@ -59,12 +76,9 @@ pub const TrackingAllocator = struct {
         if (self.parent.rawResize(buf, buf_align, new_len, ret_addr)) {
             if (memory_tracking_enabled) {
                 if (new_len > old_len) {
-                    memory_current += (new_len - old_len);
-                    if (memory_current > memory_peak) {
-                        memory_peak = memory_current;
-                    }
+                    trackAdd(new_len - old_len);
                 } else {
-                    memory_current -= (old_len - new_len);
+                    trackSub(old_len - new_len);
                 }
             }
             return true;
@@ -74,8 +88,8 @@ pub const TrackingAllocator = struct {
 
     fn trackingFree(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, ret_addr: usize) void {
         const self: *TrackingAllocator = @ptrCast(@alignCast(ctx));
-        if (memory_tracking_enabled and memory_current >= buf.len) {
-            memory_current -= buf.len;
+        if (memory_tracking_enabled) {
+            trackSub(buf.len);
         }
         self.parent.rawFree(buf, buf_align, ret_addr);
     }
@@ -86,12 +100,9 @@ pub const TrackingAllocator = struct {
         const result = self.parent.rawRemap(buf, buf_align, new_len, ret_addr);
         if (memory_tracking_enabled and result != null) {
             if (new_len > old_len) {
-                memory_current += (new_len - old_len);
-                if (memory_current > memory_peak) {
-                    memory_peak = memory_current;
-                }
+                trackAdd(new_len - old_len);
             } else {
-                memory_current -= (old_len - new_len);
+                trackSub(old_len - new_len);
             }
         }
         return result;

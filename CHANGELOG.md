@@ -15,9 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shared generic parse engine (`core/engine.zig`) eliminating duplicated parsing logic
 - `RowCollector` module (`core/row_collector.zig`) for shared SmallVec row storage
 - 12 new tests covering multi-separator, multi-byte separator, and multi-byte escape
+- NIF robustness test suite: concurrent access, memory stability, and scheduler fairness tests
+- `docs/NIF_PRACTICES.md` — Zigler-adapted NIF best practices checklist
 
 ### Changed
 
+- All CPU-bound parse NIFs now run on dirty CPU schedulers (`:dirty_cpu`) to avoid blocking normal BEAM schedulers on large inputs
+- Streaming resource creation (`streaming_new_with_config`, `streaming_new_encoded`) returns `{:error, :resource_alloc_failed}` on OOM instead of crashing the VM with `@panic`
+- Memory tracking counters (`memory_current`, `memory_peak`) replaced with `std.atomic.Value(usize)` for thread-safe access across concurrent NIF calls
+- Row count increment in `RowCollector.addRow` now saturates at `maxInt(usize)` and heap capacity doubling uses checked multiplication to prevent overflow
 - `Config` struct now supports up to 8 separators (each up to 16 bytes) and escape up to 16 bytes
 - Strategy files (`fast.zig`, `chunk.zig`, `zero_copy.zig`, `basic.zig`) rewritten as thin emitters using the shared engine
 - NIF layer adds encoded config API (`parse_fast/3`, `parse_basic/3`, etc.) alongside legacy single-byte API

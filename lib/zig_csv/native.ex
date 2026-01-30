@@ -48,6 +48,43 @@ defmodule ZigCSV.Native do
     optimize: :fast,
     resources: [:StreamingParserResource],
     zig_code_path: "./native/zig_csv/main.zig",
+    nifs: [
+      # --- CPU-bound parse NIFs: dirty_cpu to avoid blocking normal schedulers ---
+      # Basic strategy
+      parse_string: [:dirty_cpu],
+      parse_string_with_config: [:dirty_cpu],
+      parse_basic: [:dirty_cpu],
+      # SIMD/fast strategy
+      parse_string_fast: [:dirty_cpu],
+      parse_string_fast_with_config: [:dirty_cpu],
+      parse_fast: [:dirty_cpu],
+      # Parallel strategy
+      parse_string_parallel: [:dirty_cpu],
+      parse_string_parallel_with_config: [:dirty_cpu],
+      parse_parallel: [:dirty_cpu],
+      # Zero-copy strategy
+      parse_string_zero_copy: [:dirty_cpu],
+      parse_string_zero_copy_with_config: [:dirty_cpu],
+      parse_zero_copy: [:dirty_cpu],
+      # Chunk parsers (used in streaming, can still be CPU-heavy on large chunks)
+      parse_chunk: [:dirty_cpu],
+      parse_chunk_with_config: [:dirty_cpu],
+      parse_chunk_encoded: [:dirty_cpu],
+      parse_chunk_simd: [:dirty_cpu],
+      parse_chunk_simd_with_config: [:dirty_cpu],
+      # Streaming feed/finalize invoke fast parser internally
+      streaming_feed: [:dirty_cpu],
+      streaming_finalize: [:dirty_cpu],
+      # --- Normal scheduler: fast O(1) operations ---
+      streaming_new: [],
+      streaming_new_with_config: [],
+      streaming_new_encoded: [],
+      streaming_status: [],
+      nif_loaded: [],
+      get_zig_memory: [],
+      get_zig_memory_peak: [],
+      reset_zig_memory_stats: []
+    ],
     extra_modules: [
       types: {"./native/zig_csv/core/types.zig", []},
       scanner: {"./native/zig_csv/core/scanner.zig", [:types]},

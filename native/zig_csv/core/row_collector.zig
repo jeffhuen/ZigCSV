@@ -18,9 +18,15 @@ pub const RowCollector = struct {
     oom_occurred: bool = false,
 
     /// Append a row term to the collector.
-    /// On OOM, the row is silently dropped (row_count is not incremented)
-    /// and oom_occurred is set to true so callers can signal partial results.
+    /// On OOM or row count overflow, the row is silently dropped
+    /// (row_count is not incremented) and oom_occurred is set to true
+    /// so callers can signal partial results.
     pub fn addRow(self: *RowCollector, row_term: beam.term) void {
+        // Saturate: prevent usize overflow on row_count increment
+        if (self.row_count == std.math.maxInt(usize)) {
+            self.oom_occurred = true;
+            return;
+        }
         if (self.row_count < STACK_ROWS) {
             self.stack_rows[self.row_count] = row_term;
         } else {
@@ -32,7 +38,10 @@ pub const RowCollector = struct {
                 };
                 @memcpy(self.heap_rows.?[0..STACK_ROWS], &self.stack_rows);
             } else if (self.row_count >= self.heap_capacity) {
-                const new_capacity = self.heap_capacity * 2;
+                const new_capacity = std.math.mul(usize, self.heap_capacity, 2) catch {
+                    self.oom_occurred = true;
+                    return;
+                };
                 self.heap_rows = allocator.realloc(self.heap_rows.?, new_capacity) catch {
                     self.oom_occurred = true;
                     return;

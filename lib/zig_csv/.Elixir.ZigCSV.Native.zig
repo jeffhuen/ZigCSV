@@ -103,26 +103,24 @@ pub fn parse_fast(input: []const u8, encoded_seps: []const u8, escape: []const u
 // Strategy C: Streaming Parser (Resource-based)
 // ============================================================================
 
-pub fn streaming_new() StreamingParserResource {
+pub fn streaming_new() beam.term {
     return streaming_new_with_config(',', '"');
 }
 
-pub fn streaming_new_with_config(separator: u8, escape: u8) StreamingParserResource {
+pub fn streaming_new_with_config(separator: u8, escape: u8) beam.term {
     const state = StreamingParserState.init(legacyConfig(separator, escape));
-    // Resource is ~40 bytes; if this alloc fails the VM is critically OOM.
-    // Returning an error tuple isn't feasible with Zigler's auto-marshaling of resource types.
-    return StreamingParserResource.create(state, .{}) catch {
-        @panic("streaming_new_with_config: failed to create resource (VM critically OOM)");
+    const resource = StreamingParserResource.create(state, .{}) catch {
+        return beam.make(.{ .@"error", .resource_alloc_failed }, .{});
     };
+    return resource.make(.{});
 }
 
-pub fn streaming_new_encoded(encoded_seps: []const u8, escape: []const u8) StreamingParserResource {
+pub fn streaming_new_encoded(encoded_seps: []const u8, escape: []const u8) beam.term {
     const state = StreamingParserState.init(decodeConfig(encoded_seps, escape));
-    // Resource is ~40 bytes; if this alloc fails the VM is critically OOM.
-    // Returning an error tuple isn't feasible with Zigler's auto-marshaling of resource types.
-    return StreamingParserResource.create(state, .{}) catch {
-        @panic("streaming_new_encoded: failed to create resource (VM critically OOM)");
+    const resource = StreamingParserResource.create(state, .{}) catch {
+        return beam.make(.{ .@"error", .resource_alloc_failed }, .{});
     };
+    return resource.make(.{});
 }
 
 // Returns tuple: {parsed_rows_list, buffer_size}

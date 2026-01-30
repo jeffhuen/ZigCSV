@@ -17,7 +17,7 @@ alias ZigCSV.RFC4180, as: CSV
 alias NimbleCSV.RFC4180, as: NimbleCSV
 
 defmodule ComprehensiveBench do
-  @strategies [:basic, :simd, :indexed, :parallel, :zero_copy]
+  @strategies [:basic, :simd, :parallel, :zero_copy]
   @output_dir "bench/results"
 
   def run do

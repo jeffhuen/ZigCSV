@@ -20,6 +20,8 @@ zig_csv-*.tar
 # Zig
 .zig-cache/
 zig-out/
+# Zigler build artifacts (root-level copies of NIF source)
+/.Elixir.*.zig
 
 # Compiled NIF (development)
 /priv/native/
